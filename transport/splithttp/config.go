@@ -40,6 +40,7 @@ type SplitHTTPConfig struct {
 	Path               string
 	ALPN               []string
 	ClientKey          string
+	DownloadConfig     *SplitHTTPConfig
 	DialAddr           string
 	DialTransport      func(ctx context.Context, httpVersion string) (net.Conn, error)
 	H3PacketDial       func(ctx context.Context, rAddr *net.UDPAddr) (net.PacketConn, error)

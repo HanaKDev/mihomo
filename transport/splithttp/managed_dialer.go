@@ -88,7 +88,12 @@ func dialWithVersion(ctx context.Context, config *SplitHTTPConfig, httpVersion s
 		sessionID = utils.NewUUIDV4().String()
 	}
 
-	url := fmt.Sprintf("https://%s%s", config.Host, config.GetNormalizedPath())
+	uploadURL := fmt.Sprintf("https://%s%s", config.Host, config.GetNormalizedPath())
+	downloadConfig := config
+	if config.DownloadConfig != nil {
+		downloadConfig = config.DownloadConfig
+	}
+	downloadURL := fmt.Sprintf("https://%s%s", downloadConfig.Host, downloadConfig.GetNormalizedPath())
 	reader, writer := io.Pipe()
 
 	var sharedUpload *sharedClient
@@ -108,7 +113,7 @@ func dialWithVersion(ctx context.Context, config *SplitHTTPConfig, httpVersion s
 
 	if mode == "stream-one" {
 		var body io.ReadCloser
-		body, remoteAddr, localAddr, sharedUpload, err = openSharedStream(ctx, config, httpVersion, url, sessionID, reader, false)
+		body, remoteAddr, localAddr, sharedUpload, err = openSharedStream(ctx, config, httpVersion, uploadURL, sessionID, reader, false)
 		if err != nil {
 			_ = reader.Close()
 			_ = writer.Close()
@@ -124,7 +129,7 @@ func dialWithVersion(ctx context.Context, config *SplitHTTPConfig, httpVersion s
 	}
 
 	var downBody io.ReadCloser
-	downBody, remoteAddr, localAddr, sharedDownload, err = openSharedStream(ctx, config, httpVersion, url, sessionID, nil, false)
+	downBody, remoteAddr, localAddr, sharedDownload, err = openSharedStream(ctx, downloadConfig, httpVersion, downloadURL, sessionID, nil, false)
 	if err != nil {
 		_ = reader.Close()
 		_ = writer.Close()
@@ -132,8 +137,12 @@ func dialWithVersion(ctx context.Context, config *SplitHTTPConfig, httpVersion s
 	}
 
 	if mode == "stream-up" {
-		sharedUpload = sharedDownload
-		_, _, _, err = sharedUpload.client.OpenStream(ctx, url, sessionID, reader, true)
+		if downloadConfig == config {
+			sharedUpload = sharedDownload
+			_, _, _, err = sharedUpload.client.OpenStream(ctx, uploadURL, sessionID, reader, true)
+		} else {
+			_, _, _, sharedUpload, err = openSharedStream(ctx, config, httpVersion, uploadURL, sessionID, reader, true)
+		}
 		if err != nil {
 			_ = downBody.Close()
 			_ = reader.Close()
@@ -152,10 +161,16 @@ func dialWithVersion(ctx context.Context, config *SplitHTTPConfig, httpVersion s
 
 	packetWriter := &managedPacketWriter{
 		ctx:       ctx,
-		url:       url,
+		url:       uploadURL,
 		config:    config,
 		sessionID: sessionID,
 		shared:    sharedDownload,
+	}
+	if downloadConfig != config {
+		sharedUpload = globalClientManager.acquire(sharedClientKey(config, httpVersion), func() DialerClient {
+			return createHTTPClient(config, httpVersion)
+		})
+		packetWriter.shared = sharedUpload
 	}
 	return &managedConn{
 		writer:     packetWriter,

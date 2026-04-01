@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/metacubex/http"
@@ -13,28 +14,83 @@ import (
 )
 
 type SplitHTTPOptions struct {
-	Host                string            `proxy:"host,omitempty"`
-	Path                string            `proxy:"path,omitempty"`
-	Headers             map[string]string `proxy:"headers,omitempty"`
-	MaxUploadSize       int               `proxy:"max-upload-size,omitempty"`
-	MaxConcurrentPosts  int               `proxy:"max-concurrent-posts,omitempty"`
-	Mode                string            `proxy:"mode,omitempty"`
-	XPaddingBytesFrom   int               `proxy:"x-padding-bytes-from,omitempty"`
-	XPaddingBytesTo     int               `proxy:"x-padding-bytes-to,omitempty"`
-	XPaddingObfsMode    bool              `proxy:"x-padding-obfs-mode,omitempty"`
-	XPaddingKey         string            `proxy:"x-padding-key,omitempty"`
-	XPaddingHeader      string            `proxy:"x-padding-header,omitempty"`
-	XPaddingPlacement   string            `proxy:"x-padding-placement,omitempty"`
-	XPaddingMethod      string            `proxy:"x-padding-method,omitempty"`
-	UplinkHTTPMethod    string            `proxy:"uplink-http-method,omitempty"`
-	SessionPlacement    string            `proxy:"session-placement,omitempty"`
-	SessionKey          string            `proxy:"session-key,omitempty"`
-	SeqPlacement        string            `proxy:"seq-placement,omitempty"`
-	SeqKey              string            `proxy:"seq-key,omitempty"`
-	UplinkDataPlacement string            `proxy:"uplink-data-placement,omitempty"`
-	UplinkDataKey       string            `proxy:"uplink-data-key,omitempty"`
-	RequestLog          *bool             `proxy:"request-log,omitempty"`
-	TryQUIC             *bool             `proxy:"try-quic,omitempty"`
+	Host                string                     `proxy:"host,omitempty"`
+	Path                string                     `proxy:"path,omitempty"`
+	Headers             map[string]string          `proxy:"headers,omitempty"`
+	MaxUploadSize       int                        `proxy:"max-upload-size,omitempty"`
+	MaxConcurrentPosts  int                        `proxy:"max-concurrent-posts,omitempty"`
+	Mode                string                     `proxy:"mode,omitempty"`
+	NoGRPCHeader        bool                       `proxy:"no-grpc-header,omitempty"`
+	XPaddingBytes       string                     `proxy:"x-padding-bytes,omitempty"`
+	XPaddingBytesFrom   int                        `proxy:"x-padding-bytes-from,omitempty"`
+	XPaddingBytesTo     int                        `proxy:"x-padding-bytes-to,omitempty"`
+	XPaddingObfsMode    bool                       `proxy:"x-padding-obfs-mode,omitempty"`
+	XPaddingKey         string                     `proxy:"x-padding-key,omitempty"`
+	XPaddingHeader      string                     `proxy:"x-padding-header,omitempty"`
+	XPaddingPlacement   string                     `proxy:"x-padding-placement,omitempty"`
+	XPaddingMethod      string                     `proxy:"x-padding-method,omitempty"`
+	UplinkHTTPMethod    string                     `proxy:"uplink-http-method,omitempty"`
+	SessionPlacement    string                     `proxy:"session-placement,omitempty"`
+	SessionKey          string                     `proxy:"session-key,omitempty"`
+	SeqPlacement        string                     `proxy:"seq-placement,omitempty"`
+	SeqKey              string                     `proxy:"seq-key,omitempty"`
+	UplinkDataPlacement string                     `proxy:"uplink-data-placement,omitempty"`
+	UplinkDataKey       string                     `proxy:"uplink-data-key,omitempty"`
+	RequestLog          *bool                      `proxy:"request-log,omitempty"`
+	TryQUIC             *bool                      `proxy:"try-quic,omitempty"`
+	DownloadSettings    *SplitHTTPDownloadSettings `proxy:"download-settings,omitempty"`
+}
+
+type SplitHTTPDownloadSettings struct {
+	Path              *string            `proxy:"path,omitempty"`
+	Host              *string            `proxy:"host,omitempty"`
+	Headers           *map[string]string `proxy:"headers,omitempty"`
+	NoGRPCHeader      *bool              `proxy:"no-grpc-header,omitempty"`
+	XPaddingBytes     *string            `proxy:"x-padding-bytes,omitempty"`
+	Server            *string            `proxy:"server,omitempty"`
+	Port              *int               `proxy:"port,omitempty"`
+	TLS               *bool              `proxy:"tls,omitempty"`
+	ALPN              *[]string          `proxy:"alpn,omitempty"`
+	ECHOpts           *ECHOptions        `proxy:"ech-opts,omitempty"`
+	RealityOpts       *RealityOptions    `proxy:"reality-opts,omitempty"`
+	SkipCertVerify    *bool              `proxy:"skip-cert-verify,omitempty"`
+	Fingerprint       *string            `proxy:"fingerprint,omitempty"`
+	Certificate       *string            `proxy:"certificate,omitempty"`
+	PrivateKey        *string            `proxy:"private-key,omitempty"`
+	ServerName        *string            `proxy:"servername,omitempty"`
+	ClientFingerprint *string            `proxy:"client-fingerprint,omitempty"`
+}
+
+type XHTTPOptions = SplitHTTPOptions
+type XHTTPDownloadSettings = SplitHTTPDownloadSettings
+
+func parseCompatXPaddingRange(value string) *splithttp.RangeConfig {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+
+	parts := strings.Split(value, "-")
+	switch len(parts) {
+	case 1:
+		n, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+		if err != nil {
+			return nil
+		}
+		return &splithttp.RangeConfig{From: n, To: n}
+	case 2:
+		from, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+		if err != nil {
+			return nil
+		}
+		to, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+		if err != nil {
+			return nil
+		}
+		return &splithttp.RangeConfig{From: from, To: to}
+	default:
+		return nil
+	}
 }
 
 func normalizeSplitHTTPDialAddr(ctx context.Context, addr string) string {
@@ -116,6 +172,8 @@ func buildSplitHTTPConfig(ctx context.Context, addr string, tlsServerName string
 	}
 	if xhttpOpts.XPaddingBytesTo > 0 {
 		config.XPaddingBytes = &splithttp.RangeConfig{From: xhttpOpts.XPaddingBytesFrom, To: xhttpOpts.XPaddingBytesTo}
+	} else if compat := parseCompatXPaddingRange(xhttpOpts.XPaddingBytes); compat != nil {
+		config.XPaddingBytes = compat
 	}
 
 	if config.Host == "" {
@@ -139,6 +197,8 @@ func buildSplitHTTPConfig(ctx context.Context, addr string, tlsServerName string
 	}
 	if splitHTTPOpts.XPaddingBytesTo > 0 {
 		config.XPaddingBytes = &splithttp.RangeConfig{From: splitHTTPOpts.XPaddingBytesFrom, To: splitHTTPOpts.XPaddingBytesTo}
+	} else if compat := parseCompatXPaddingRange(splitHTTPOpts.XPaddingBytes); compat != nil {
+		config.XPaddingBytes = compat
 	}
 	if splitHTTPOpts.XPaddingObfsMode {
 		config.XPaddingObfsMode = true
