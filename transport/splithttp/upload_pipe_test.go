@@ -110,3 +110,13 @@ func TestUploadPipeBackpressure(t *testing.T) {
 		t.Fatal("timed out waiting for blocked Write to resume")
 	}
 }
+
+func TestUploadPipeWriteAfterInterrupt(t *testing.T) {
+	pipe := newUploadPipe(8)
+	wantErr := errors.New("interrupted")
+	pipe.Interrupt(wantErr)
+
+	if _, err := pipe.Write([]byte("abc")); !errors.Is(err, wantErr) {
+		t.Fatalf("Write error = %v, want %v", err, wantErr)
+	}
+}

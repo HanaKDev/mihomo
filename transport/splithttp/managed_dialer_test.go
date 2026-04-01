@@ -2,6 +2,7 @@ package splithttp
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"strings"
@@ -269,4 +270,32 @@ func TestDialWithVersionPacketUpUsesDownloadConfigForDownstream(t *testing.T) {
 	if len(upClient.posts) == 0 || upClient.posts[0].payload != "abcd" {
 		t.Fatalf("unexpected upload posts: %+v", upClient.posts)
 	}
+}
+
+func TestManagedPacketWriterPropagatesPostError(t *testing.T) {
+	client := &fakePacketDialerClient{postErr: io.ErrClosedPipe}
+	lease := &xmuxLease{
+		ctx:    context.Background(),
+		key:    "test-error",
+		config: &SplitHTTPConfig{},
+		client: &XmuxClient{XmuxConn: client},
+	}
+	lease.client.LeftRequests.Store(1 << 30)
+
+	writer := newManagedPacketWriter(context.Background(), "https://example.com/test", &SplitHTTPConfig{
+		ScMaxEachPostBytes: &RangeConfig{From: 4, To: 4},
+		ScMaxBufferedPosts: 4,
+		ScMinPostsInterval: &RangeConfig{},
+	}, "session-1", lease)
+
+	if _, err := writer.Write([]byte("abcd")); err != nil {
+		t.Fatalf("initial Write failed early: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	if _, err := writer.Write([]byte("efgh")); !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("follow-up Write error = %v, want %v", err, io.ErrClosedPipe)
+	}
+	_ = writer.Close()
 }
