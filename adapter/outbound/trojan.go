@@ -71,7 +71,6 @@ func (t *Trojan) StreamConnContext(ctx context.Context, c net.Conn, metadata *C.
 	switch t.option.Network {
 	case "xhttp", "splithttp":
 		splitConfig := buildSplitHTTPConfig(ctx, t.addr, t.option.SNI, t.option.ALPN, t.option.XHTTPOpts, t.option.SplitHTTPOpts, true)
-		splitConfig.HasReality = t.realityConfig != nil
 		splitConfig.H3PacketDial = func(ctx context.Context, rAddr *net.UDPAddr) (net.PacketConn, error) {
 			return t.dialer.ListenPacket(ctx, "udp", "", rAddr.AddrPort())
 		}
@@ -87,7 +86,7 @@ func (t *Trojan) StreamConnContext(ctx context.Context, c net.Conn, metadata *C.
 			}
 			return uploadConn, nil
 		}
-		c, err = splithttp.DialContext(ctx, splitConfig)
+		c, err = splithttp.DialContextWithOptions(ctx, splitConfig, splithttp.DialRuntime{HasReality: t.realityConfig != nil})
 		if err != nil {
 			return nil, err
 		}

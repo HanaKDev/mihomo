@@ -97,6 +97,10 @@ type managedPacketWriter struct {
 	lastPost time.Time
 }
 
+type DialRuntime struct {
+	HasReality bool
+}
+
 func newManagedPacketWriter(ctx context.Context, url string, config *SplitHTTPConfig, sessionID string, lease *xmuxLease) *managedPacketWriter {
 	maxUploadSize := config.GetNormalizedScMaxEachPostBytes().rand()
 	if maxUploadSize <= 0 {
@@ -275,8 +279,21 @@ func newSharedStreamLease(ctx context.Context, config *SplitHTTPConfig, httpVers
 	return lease
 }
 
-func dialWithVersion(ctx context.Context, config *SplitHTTPConfig, httpVersion string) (net.Conn, error) {
-	mode := parseMode(config)
+func resolveDialMode(config *SplitHTTPConfig, runtime DialRuntime) string {
+	if config.Mode != "" && config.Mode != "auto" {
+		return config.Mode
+	}
+	if runtime.HasReality {
+		if config.DownloadConfig != nil {
+			return "stream-up"
+		}
+		return "stream-one"
+	}
+	return "packet-up"
+}
+
+func dialWithVersion(ctx context.Context, config *SplitHTTPConfig, httpVersion string, runtime DialRuntime) (net.Conn, error) {
+	mode := resolveDialMode(config, runtime)
 
 	sessionID := ""
 	if mode != "stream-one" {
@@ -356,13 +373,13 @@ func dialWithVersion(ctx context.Context, config *SplitHTTPConfig, httpVersion s
 	}, nil
 }
 
-func DialContext(ctx context.Context, config *SplitHTTPConfig) (net.Conn, error) {
+func DialContextWithOptions(ctx context.Context, config *SplitHTTPConfig, runtime DialRuntime) (net.Conn, error) {
 	if config.DialTransport == nil {
 		return nil, fmt.Errorf("splithttp transport dial is not configured")
 	}
 	var lastErr error
 	for _, httpVersion := range candidateHTTPVersions(config) {
-		conn, err := dialWithVersion(ctx, config, httpVersion)
+		conn, err := dialWithVersion(ctx, config, httpVersion, runtime)
 		if err == nil {
 			return conn, nil
 		}
@@ -372,4 +389,8 @@ func DialContext(ctx context.Context, config *SplitHTTPConfig) (net.Conn, error)
 		lastErr = fmt.Errorf("splithttp failed to select a transport")
 	}
 	return nil, lastErr
+}
+
+func DialContext(ctx context.Context, config *SplitHTTPConfig) (net.Conn, error) {
+	return DialContextWithOptions(ctx, config, DialRuntime{})
 }

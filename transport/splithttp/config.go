@@ -84,7 +84,6 @@ type SplitHTTPConfig struct {
 	MaxConcurrentPosts int
 	Mode               string
 	Xmux               *XmuxConfig
-	HasReality         bool
 	TLS                bool
 
 	XPaddingBytes        *RangeConfig
