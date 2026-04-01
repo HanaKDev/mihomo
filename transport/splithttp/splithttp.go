@@ -371,10 +371,19 @@ func buildHTTP3Client(config *SplitHTTPConfig) *http.Client {
 		TLSClientConfig: tlsConf,
 		QUICConfig:      quicConf,
 		Dial: func(ctx context.Context, _ string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
-			udpAddr, err := net.ResolveUDPAddr("udp", config.DialAddr)
+			host, port, err := net.SplitHostPort(config.DialAddr)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("invalid splithttp dial addr %q: %w", config.DialAddr, err)
 			}
+			ip := net.ParseIP(host)
+			if ip == nil {
+				return nil, fmt.Errorf("splithttp h3 requires resolved ip dial addr, got host %q", host)
+			}
+			portNum, err := strconv.Atoi(port)
+			if err != nil {
+				return nil, fmt.Errorf("invalid splithttp dial addr port %q: %w", port, err)
+			}
+			udpAddr := &net.UDPAddr{IP: ip, Port: portNum}
 
 			var conn net.PacketConn
 			if config.H3PacketDial != nil {

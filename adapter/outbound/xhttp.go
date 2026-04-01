@@ -46,10 +46,11 @@ func normalizeSplitHTTPDialAddr(ctx context.Context, addr string) string {
 	if net.ParseIP(host) != nil {
 		return addr
 	}
-	ip, err := resolver.ResolveIP(ctx, host)
+	ip, err := resolver.ResolveIPWithResolver(ctx, host, resolver.ProxyServerHostResolver)
 	if err != nil {
 		return addr
 	}
+	ip, port = resolver.LookupIP4P(ip, port)
 	return net.JoinHostPort(ip.String(), port)
 }
 func decideXHTTPALPN(alpn []string) []string {
