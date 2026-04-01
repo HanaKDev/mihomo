@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/common/utils"
+	"github.com/metacubex/mihomo/transport/splithttp/multibuffer"
 )
 
 type managedPacketWriter struct {
@@ -21,7 +22,7 @@ type managedPacketWriter struct {
 
 	maxUploadSize   int
 	minPostInterval RangeConfig
-	pipeline        uploadPipeline
+	pipeline        multibuffer.Pipeline
 
 	mu       sync.Mutex
 	seq      int64
@@ -45,7 +46,7 @@ func newManagedPacketWriter(ctx context.Context, url string, config *SplitHTTPCo
 		lease:           lease,
 		maxUploadSize:   maxUploadSize,
 		minPostInterval: config.GetNormalizedScMinPostsInterval(),
-		pipeline:        newUploadPipe(maxBufferedBytes),
+		pipeline:        multibuffer.New(maxBufferedBytes),
 		done:            make(chan struct{}),
 	}
 	go w.run()

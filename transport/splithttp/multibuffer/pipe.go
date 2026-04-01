@@ -1,26 +1,18 @@
-package splithttp
+package multibuffer
 
 import (
 	"io"
 	"sync"
 )
 
-type uploadBatchReader interface {
-	ReadChunk(maxBytes int) ([]byte, error)
-}
-
-type uploadBatchWriter interface {
+type Pipeline interface {
 	Write([]byte) (int, error)
+	ReadChunk(maxBytes int) ([]byte, error)
 	Close() error
 	Interrupt(error)
 }
 
-type uploadPipeline interface {
-	uploadBatchReader
-	uploadBatchWriter
-}
-
-type uploadPipe struct {
+type Pipe struct {
 	mu          sync.Mutex
 	cond        *sync.Cond
 	queue       [][]byte
@@ -31,13 +23,13 @@ type uploadPipe struct {
 	err         error
 }
 
-func newUploadPipe(limit int) *uploadPipe {
-	p := &uploadPipe{limit: limit}
+func New(limit int) *Pipe {
+	p := &Pipe{limit: limit}
 	p.cond = sync.NewCond(&p.mu)
 	return p
 }
 
-func (p *uploadPipe) Write(b []byte) (int, error) {
+func (p *Pipe) Write(b []byte) (int, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -61,7 +53,7 @@ func (p *uploadPipe) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-func (p *uploadPipe) ReadChunk(maxBytes int) ([]byte, error) {
+func (p *Pipe) ReadChunk(maxBytes int) ([]byte, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -103,7 +95,7 @@ func (p *uploadPipe) ReadChunk(maxBytes int) ([]byte, error) {
 	return out, nil
 }
 
-func (p *uploadPipe) Interrupt(err error) {
+func (p *Pipe) Interrupt(err error) {
 	p.mu.Lock()
 	if err == nil {
 		err = io.ErrClosedPipe
@@ -116,7 +108,7 @@ func (p *uploadPipe) Interrupt(err error) {
 	p.mu.Unlock()
 }
 
-func (p *uploadPipe) Close() error {
+func (p *Pipe) Close() error {
 	p.mu.Lock()
 	p.closed = true
 	p.cond.Broadcast()

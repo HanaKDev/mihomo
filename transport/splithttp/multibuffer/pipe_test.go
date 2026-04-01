@@ -1,4 +1,4 @@
-package splithttp
+package multibuffer
 
 import (
 	"errors"
@@ -7,8 +7,8 @@ import (
 	"time"
 )
 
-func TestUploadPipeReadSplit(t *testing.T) {
-	pipe := newUploadPipe(32)
+func TestPipeReadSplit(t *testing.T) {
+	pipe := New(32)
 	if _, err := pipe.Write([]byte("abcdef")); err != nil {
 		t.Fatalf("Write failed: %v", err)
 	}
@@ -30,8 +30,8 @@ func TestUploadPipeReadSplit(t *testing.T) {
 	}
 }
 
-func TestUploadPipeInterrupt(t *testing.T) {
-	pipe := newUploadPipe(32)
+func TestPipeInterrupt(t *testing.T) {
+	pipe := New(32)
 	wantErr := errors.New("upload failed")
 	done := make(chan error, 1)
 
@@ -53,8 +53,8 @@ func TestUploadPipeInterrupt(t *testing.T) {
 	}
 }
 
-func TestUploadPipeCloseEOF(t *testing.T) {
-	pipe := newUploadPipe(32)
+func TestPipeCloseEOF(t *testing.T) {
+	pipe := New(32)
 	done := make(chan error, 1)
 
 	go func() {
@@ -75,8 +75,8 @@ func TestUploadPipeCloseEOF(t *testing.T) {
 	}
 }
 
-func TestUploadPipeBackpressure(t *testing.T) {
-	pipe := newUploadPipe(4)
+func TestPipeBackpressure(t *testing.T) {
+	pipe := New(4)
 	if _, err := pipe.Write([]byte("abcd")); err != nil {
 		t.Fatalf("initial Write failed: %v", err)
 	}
@@ -111,8 +111,8 @@ func TestUploadPipeBackpressure(t *testing.T) {
 	}
 }
 
-func TestUploadPipeWriteAfterInterrupt(t *testing.T) {
-	pipe := newUploadPipe(8)
+func TestPipeWriteAfterInterrupt(t *testing.T) {
+	pipe := New(8)
 	wantErr := errors.New("interrupted")
 	pipe.Interrupt(wantErr)
 
