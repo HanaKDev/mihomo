@@ -105,6 +105,7 @@ func (v *Vmess) StreamConnContext(ctx context.Context, c net.Conn, metadata *C.M
 	case "xhttp", "splithttp":
 		host, _, _ := net.SplitHostPort(v.addr)
 		splitConfig := buildSplitHTTPConfig(ctx, v.addr, v.option.ServerName, v.option.ALPN, v.option.XHTTPOpts, v.option.SplitHTTPOpts, v.option.TLS)
+		splitConfig.HasReality = v.realityConfig != nil
 		splitConfig.H3PacketDial = func(ctx context.Context, rAddr *net.UDPAddr) (net.PacketConn, error) {
 			return v.dialer.ListenPacket(ctx, "udp", "", rAddr.AddrPort())
 		}

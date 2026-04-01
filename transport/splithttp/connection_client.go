@@ -27,13 +27,13 @@ func (c *managedConn) Read(b []byte) (int, error) {
 func (c *managedConn) Close() error {
 	var err error
 	c.closeOnce.Do(func() {
-		if c.onClose != nil {
-			c.onClose()
-		}
 		err = c.writer.Close()
 		err2 := c.reader.Close()
 		if err == nil {
 			err = err2
+		}
+		if c.onClose != nil {
+			c.onClose()
 		}
 	})
 	return err

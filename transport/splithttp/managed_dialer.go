@@ -1,39 +1,217 @@
 package splithttp
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"net"
 	"strconv"
+	"sync"
+	"time"
 
 	"github.com/metacubex/mihomo/common/utils"
 )
+
+type xmuxLease struct {
+	ctx         context.Context
+	key         string
+	config      *SplitHTTPConfig
+	httpVersion string
+	client      *XmuxClient
+}
+
+func newXmuxLease(ctx context.Context, config *SplitHTTPConfig, httpVersion string) *xmuxLease {
+	return &xmuxLease{
+		ctx:         ctx,
+		key:         sharedClientKey(config, httpVersion),
+		config:      config,
+		httpVersion: httpVersion,
+	}
+}
+
+func (l *xmuxLease) acquire() {
+	if l.client != nil {
+		return
+	}
+	l.client = globalClientManager.acquire(l.ctx, l.key, l.config, func() DialerClient {
+		return createHTTPClient(l.config, l.httpVersion)
+	})
+}
+
+func (l *xmuxLease) dialerClient() DialerClient {
+	if l.client == nil {
+		return nil
+	}
+	return l.client.dialerClient()
+}
+
+func (l *xmuxLease) release() {
+	if l.client == nil {
+		return
+	}
+	l.client.release()
+	l.client = nil
+}
+
+func (l *xmuxLease) consumeStreamRequest() {
+	if l.client != nil {
+		l.client.LeftRequests.Add(-1)
+	}
+}
+
+func (l *xmuxLease) rotateForPacket(now time.Time) {
+	l.acquire()
+	if l.client == nil {
+		return
+	}
+	expired := !l.client.UnreusableAt.IsZero() && now.After(l.client.UnreusableAt)
+	if l.client.XmuxConn.IsClosed() || expired || l.client.LeftRequests.Add(-1) <= 0 {
+		next := globalClientManager.acquire(l.ctx, l.key, l.config, func() DialerClient {
+			return createHTTPClient(l.config, l.httpVersion)
+		})
+		l.client.release()
+		l.client = next
+		l.client.LeftRequests.Add(-1)
+	}
+}
 
 type managedPacketWriter struct {
 	ctx       context.Context
 	url       string
 	config    *SplitHTTPConfig
 	sessionID string
-	shared    *XmuxClient
-	seq       int64
-	closed    bool
+	lease     *xmuxLease
+
+	maxUploadSize    int
+	maxBufferedBytes int
+	minPostInterval  RangeConfig
+
+	mu       sync.Mutex
+	cond     *sync.Cond
+	buffer   bytes.Buffer
+	seq      int64
+	closed   bool
+	writeErr error
+	done     chan struct{}
+	lastPost time.Time
+}
+
+func newManagedPacketWriter(ctx context.Context, url string, config *SplitHTTPConfig, sessionID string, lease *xmuxLease) *managedPacketWriter {
+	maxUploadSize := config.GetNormalizedScMaxEachPostBytes().rand()
+	if maxUploadSize <= 0 {
+		maxUploadSize = 1
+	}
+	maxBufferedBytes := config.GetNormalizedScMaxBufferedPosts() * maxUploadSize
+	w := &managedPacketWriter{
+		ctx:              ctx,
+		url:              url,
+		config:           config,
+		sessionID:        sessionID,
+		lease:            lease,
+		maxUploadSize:    maxUploadSize,
+		maxBufferedBytes: maxBufferedBytes,
+		minPostInterval:  config.GetNormalizedScMinPostsInterval(),
+		done:             make(chan struct{}),
+	}
+	w.cond = sync.NewCond(&w.mu)
+	go w.run()
+	return w
+}
+
+func (w *managedPacketWriter) nextChunk() ([]byte, string, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	for {
+		if w.writeErr != nil {
+			return nil, "", w.writeErr
+		}
+		if w.buffer.Len() > 0 {
+			size := w.maxUploadSize
+			if size <= 0 || size > w.buffer.Len() {
+				size = w.buffer.Len()
+			}
+			chunk := make([]byte, size)
+			_, _ = w.buffer.Read(chunk)
+			seqStr := strconv.FormatInt(w.seq, 10)
+			w.seq++
+			w.cond.Broadcast()
+			return chunk, seqStr, nil
+		}
+		if w.closed {
+			return nil, "", io.EOF
+		}
+		w.cond.Wait()
+	}
+}
+
+func (w *managedPacketWriter) fail(err error) {
+	w.mu.Lock()
+	if w.writeErr == nil {
+		w.writeErr = err
+	}
+	w.cond.Broadcast()
+	w.mu.Unlock()
+}
+
+func (w *managedPacketWriter) run() {
+	defer close(w.done)
+
+	for {
+		chunk, seqStr, err := w.nextChunk()
+		if err != nil {
+			return
+		}
+		if waitMs := w.minPostInterval.rand(); waitMs > 0 {
+			sleepFor := time.Duration(waitMs)*time.Millisecond - time.Since(w.lastPost)
+			if sleepFor > 0 {
+				timer := time.NewTimer(sleepFor)
+				select {
+				case <-w.ctx.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
+				}
+			}
+		}
+		w.lastPost = time.Now()
+		w.lease.rotateForPacket(w.lastPost)
+		if err := w.lease.dialerClient().PostPacket(w.ctx, w.url, w.sessionID, seqStr, chunk); err != nil {
+			w.fail(err)
+			return
+		}
+	}
 }
 
 func (w *managedPacketWriter) Write(b []byte) (int, error) {
-	if w.closed {
-		return 0, io.ErrClosedPipe
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	for {
+		if w.writeErr != nil {
+			return 0, w.writeErr
+		}
+		if w.closed {
+			return 0, io.ErrClosedPipe
+		}
+		if w.maxBufferedBytes <= 0 || w.buffer.Len()+len(b) <= w.maxBufferedBytes {
+			break
+		}
+		w.cond.Wait()
 	}
-	seqStr := strconv.FormatInt(w.seq, 10)
-	w.seq++
-	if err := w.shared.dialerClient().PostPacket(w.ctx, w.url, w.sessionID, seqStr, b); err != nil {
-		return 0, err
-	}
+
+	_, _ = w.buffer.Write(b)
+	w.cond.Signal()
 	return len(b), nil
 }
 
 func (w *managedPacketWriter) Close() error {
+	w.mu.Lock()
 	w.closed = true
+	w.cond.Broadcast()
+	w.mu.Unlock()
+	<-w.done
 	return nil
 }
 
@@ -67,17 +245,34 @@ func sharedClientKey(config *SplitHTTPConfig, httpVersion string) string {
 }
 
 func openSharedStream(ctx context.Context, config *SplitHTTPConfig, httpVersion, url, sessionID string, body io.Reader, uploadOnly bool) (io.ReadCloser, net.Addr, net.Addr, *XmuxClient, error) {
-	key := sharedClientKey(config, httpVersion)
-	shared := globalClientManager.acquire(ctx, key, config, func() DialerClient {
-		return createHTTPClient(config, httpVersion)
-	})
+	lease := newXmuxLease(ctx, config, httpVersion)
+	lease.acquire()
+	lease.consumeStreamRequest()
 
-	reader, remoteAddr, localAddr, err := shared.dialerClient().OpenStream(ctx, url, sessionID, body, uploadOnly)
+	reader, remoteAddr, localAddr, err := lease.dialerClient().OpenStream(ctx, url, sessionID, body, uploadOnly)
 	if err != nil {
-		shared.release()
+		lease.release()
 		return nil, nil, nil, nil, err
 	}
-	return reader, remoteAddr, localAddr, shared, nil
+	return reader, remoteAddr, localAddr, lease.client, nil
+}
+
+func openSharedStreamWithLease(ctx context.Context, lease *xmuxLease, url, sessionID string, body io.Reader, uploadOnly bool) (io.ReadCloser, net.Addr, net.Addr, error) {
+	lease.acquire()
+	lease.consumeStreamRequest()
+
+	reader, remoteAddr, localAddr, err := lease.dialerClient().OpenStream(ctx, url, sessionID, body, uploadOnly)
+	if err != nil {
+		lease.release()
+		return nil, nil, nil, err
+	}
+	return reader, remoteAddr, localAddr, nil
+}
+
+func newSharedStreamLease(ctx context.Context, config *SplitHTTPConfig, httpVersion string) *xmuxLease {
+	lease := newXmuxLease(ctx, config, httpVersion)
+	lease.acquire()
+	return lease
 }
 
 func dialWithVersion(ctx context.Context, config *SplitHTTPConfig, httpVersion string) (net.Conn, error) {
@@ -96,24 +291,21 @@ func dialWithVersion(ctx context.Context, config *SplitHTTPConfig, httpVersion s
 	downloadURL := fmt.Sprintf("https://%s%s", downloadConfig.Host, downloadConfig.GetNormalizedPath())
 	reader, writer := io.Pipe()
 
-	var sharedUpload *XmuxClient
-	var sharedDownload *XmuxClient
+	uploadLease := newXmuxLease(ctx, config, httpVersion)
+	downloadLease := newXmuxLease(ctx, downloadConfig, httpVersion)
+
 	var remoteAddr net.Addr
 	var localAddr net.Addr
 	var err error
 
 	releaseAll := func() {
-		if sharedUpload != nil {
-			sharedUpload.release()
-		}
-		if sharedDownload != nil && sharedDownload != sharedUpload {
-			sharedDownload.release()
-		}
+		uploadLease.release()
+		downloadLease.release()
 	}
 
 	if mode == "stream-one" {
 		var body io.ReadCloser
-		body, remoteAddr, localAddr, sharedUpload, err = openSharedStream(ctx, config, httpVersion, uploadURL, sessionID, reader, false)
+		body, remoteAddr, localAddr, err = openSharedStreamWithLease(ctx, uploadLease, uploadURL, sessionID, reader, false)
 		if err != nil {
 			_ = reader.Close()
 			_ = writer.Close()
@@ -129,7 +321,7 @@ func dialWithVersion(ctx context.Context, config *SplitHTTPConfig, httpVersion s
 	}
 
 	var downBody io.ReadCloser
-	downBody, remoteAddr, localAddr, sharedDownload, err = openSharedStream(ctx, downloadConfig, httpVersion, downloadURL, sessionID, nil, false)
+	downBody, remoteAddr, localAddr, err = openSharedStreamWithLease(ctx, downloadLease, downloadURL, sessionID, nil, false)
 	if err != nil {
 		_ = reader.Close()
 		_ = writer.Close()
@@ -137,12 +329,7 @@ func dialWithVersion(ctx context.Context, config *SplitHTTPConfig, httpVersion s
 	}
 
 	if mode == "stream-up" {
-		if downloadConfig == config {
-			sharedUpload = sharedDownload
-			_, _, _, err = sharedUpload.dialerClient().OpenStream(ctx, uploadURL, sessionID, reader, true)
-		} else {
-			_, _, _, sharedUpload, err = openSharedStream(ctx, config, httpVersion, uploadURL, sessionID, reader, true)
-		}
+		_, _, _, err = openSharedStreamWithLease(ctx, uploadLease, uploadURL, sessionID, reader, true)
 		if err != nil {
 			_ = downBody.Close()
 			_ = reader.Close()
@@ -159,19 +346,7 @@ func dialWithVersion(ctx context.Context, config *SplitHTTPConfig, httpVersion s
 		}, nil
 	}
 
-	packetWriter := &managedPacketWriter{
-		ctx:       ctx,
-		url:       uploadURL,
-		config:    config,
-		sessionID: sessionID,
-		shared:    sharedDownload,
-	}
-	if downloadConfig != config {
-		sharedUpload = globalClientManager.acquire(ctx, sharedClientKey(config, httpVersion), config, func() DialerClient {
-			return createHTTPClient(config, httpVersion)
-		})
-		packetWriter.shared = sharedUpload
-	}
+	packetWriter := newManagedPacketWriter(ctx, uploadURL, config, sessionID, uploadLease)
 	return &managedConn{
 		writer:     packetWriter,
 		reader:     downBody,

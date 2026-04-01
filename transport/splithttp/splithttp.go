@@ -154,6 +154,12 @@ func parseMode(config *SplitHTTPConfig) string {
 	if config.Mode != "" && config.Mode != "auto" {
 		return config.Mode
 	}
+	if config.HasReality {
+		if config.DownloadConfig != nil {
+			return "stream-up"
+		}
+		return "stream-one"
+	}
 	return "packet-up"
 }
 

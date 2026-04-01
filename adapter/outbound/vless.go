@@ -297,6 +297,7 @@ func (v *Vless) configureSplitHTTPTransport(config *splithttp.SplitHTTPConfig, a
 
 func (v *Vless) buildSplitHTTPConfig(ctx context.Context) (*splithttp.SplitHTTPConfig, error) {
 	config := buildSplitHTTPConfig(ctx, v.addr, v.option.ServerName, v.option.ALPN, v.option.XHTTPOpts, v.option.SplitHTTPOpts, v.option.TLS)
+	config.HasReality = v.realityConfig != nil
 	v.configureSplitHTTPTransport(config, v.addr, v.option.TLS, v.option.ALPN, v.echConfig, v.realityConfig, v.option.SkipCertVerify, v.option.Fingerprint, v.option.Certificate, v.option.PrivateKey, v.option.ServerName, v.option.ClientFingerprint)
 
 	ds := v.option.XHTTPOpts.DownloadSettings
@@ -350,6 +351,7 @@ func (v *Vless) buildSplitHTTPConfig(ctx context.Context) (*splithttp.SplitHTTPC
 	}
 
 	config.DownloadConfig = buildSplitHTTPConfig(ctx, downloadAddr, downloadServerName, downloadALPN, downloadOpts, SplitHTTPOptions{}, downloadTLS)
+	config.DownloadConfig.HasReality = downloadRealityConfig != nil
 	v.configureSplitHTTPTransport(config.DownloadConfig, downloadAddr, downloadTLS, downloadALPN, downloadEchConfig, downloadRealityConfig, downloadSkipCertVerify, downloadFingerprint, downloadCertificate, downloadPrivateKey, downloadServerName, downloadClientFingerprint)
 	return config, nil
 }
