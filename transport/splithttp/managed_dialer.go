@@ -19,6 +19,7 @@ type xmuxLease struct {
 	config      *SplitHTTPConfig
 	httpVersion string
 	client      *XmuxClient
+	create      func() DialerClient
 }
 
 func newXmuxLease(ctx context.Context, config *SplitHTTPConfig, httpVersion string) *xmuxLease {
@@ -27,6 +28,9 @@ func newXmuxLease(ctx context.Context, config *SplitHTTPConfig, httpVersion stri
 		key:         sharedClientKey(config, httpVersion),
 		config:      config,
 		httpVersion: httpVersion,
+		create: func() DialerClient {
+			return createHTTPClient(config, httpVersion)
+		},
 	}
 }
 
@@ -34,9 +38,7 @@ func (l *xmuxLease) acquire() {
 	if l.client != nil {
 		return
 	}
-	l.client = globalClientManager.acquire(l.ctx, l.key, l.config, func() DialerClient {
-		return createHTTPClient(l.config, l.httpVersion)
-	})
+	l.client = globalClientManager.acquire(l.ctx, l.key, l.config, l.create)
 }
 
 func (l *xmuxLease) dialerClient() DialerClient {
@@ -67,9 +69,7 @@ func (l *xmuxLease) rotateForPacket(now time.Time) {
 	}
 	expired := !l.client.UnreusableAt.IsZero() && now.After(l.client.UnreusableAt)
 	if l.client.XmuxConn.IsClosed() || expired || l.client.LeftRequests.Add(-1) <= 0 {
-		next := globalClientManager.acquire(l.ctx, l.key, l.config, func() DialerClient {
-			return createHTTPClient(l.config, l.httpVersion)
-		})
+		next := globalClientManager.acquire(l.ctx, l.key, l.config, l.create)
 		l.client.release()
 		l.client = next
 		l.client.LeftRequests.Add(-1)
