@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/metacubex/http"
-	"github.com/metacubex/mihomo/component/resolver"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/transport/splithttp"
 )
@@ -39,6 +38,7 @@ type SplitHTTPOptions struct {
 }
 
 func normalizeSplitHTTPDialAddr(ctx context.Context, addr string) string {
+	_ = ctx
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return addr
@@ -46,12 +46,7 @@ func normalizeSplitHTTPDialAddr(ctx context.Context, addr string) string {
 	if net.ParseIP(host) != nil {
 		return addr
 	}
-	ip, err := resolver.ResolveIPWithResolver(ctx, host, resolver.ProxyServerHostResolver)
-	if err != nil {
-		return addr
-	}
-	ip, port = resolver.LookupIP4P(ip, port)
-	return net.JoinHostPort(ip.String(), port)
+	return net.JoinHostPort(host, port)
 }
 func decideXHTTPALPN(alpn []string) []string {
 	log.Debugln("decideXHTTPALPN received: %v", alpn)
