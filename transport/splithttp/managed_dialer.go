@@ -1,7 +1,6 @@
 package splithttp
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -13,69 +12,6 @@ import (
 	"github.com/metacubex/mihomo/common/utils"
 )
 
-type xmuxLease struct {
-	ctx         context.Context
-	key         string
-	config      *SplitHTTPConfig
-	httpVersion string
-	client      *XmuxClient
-	create      func() DialerClient
-}
-
-func newXmuxLease(ctx context.Context, config *SplitHTTPConfig, httpVersion string) *xmuxLease {
-	return &xmuxLease{
-		ctx:         ctx,
-		key:         sharedClientKey(config, httpVersion),
-		config:      config,
-		httpVersion: httpVersion,
-		create: func() DialerClient {
-			return createHTTPClient(config, httpVersion)
-		},
-	}
-}
-
-func (l *xmuxLease) acquire() {
-	if l.client != nil {
-		return
-	}
-	l.client = globalClientManager.acquire(l.ctx, l.key, l.config, l.create)
-}
-
-func (l *xmuxLease) dialerClient() DialerClient {
-	if l.client == nil {
-		return nil
-	}
-	return l.client.dialerClient()
-}
-
-func (l *xmuxLease) release() {
-	if l.client == nil {
-		return
-	}
-	l.client.release()
-	l.client = nil
-}
-
-func (l *xmuxLease) consumeStreamRequest() {
-	if l.client != nil {
-		l.client.LeftRequests.Add(-1)
-	}
-}
-
-func (l *xmuxLease) rotateForPacket(now time.Time) {
-	l.acquire()
-	if l.client == nil {
-		return
-	}
-	expired := !l.client.UnreusableAt.IsZero() && now.After(l.client.UnreusableAt)
-	if l.client.XmuxConn.IsClosed() || expired || l.client.LeftRequests.Add(-1) <= 0 {
-		next := globalClientManager.acquire(l.ctx, l.key, l.config, l.create)
-		l.client.release()
-		l.client = next
-		l.client.LeftRequests.Add(-1)
-	}
-}
-
 type managedPacketWriter struct {
 	ctx       context.Context
 	url       string
@@ -83,22 +19,16 @@ type managedPacketWriter struct {
 	sessionID string
 	lease     *xmuxLease
 
-	maxUploadSize    int
-	maxBufferedBytes int
-	minPostInterval  RangeConfig
+	maxUploadSize   int
+	minPostInterval RangeConfig
+	pipeline        uploadPipeline
 
 	mu       sync.Mutex
-	cond     *sync.Cond
-	buffer   bytes.Buffer
 	seq      int64
 	closed   bool
 	writeErr error
 	done     chan struct{}
 	lastPost time.Time
-}
-
-type DialRuntime struct {
-	HasReality bool
 }
 
 func newManagedPacketWriter(ctx context.Context, url string, config *SplitHTTPConfig, sessionID string, lease *xmuxLease) *managedPacketWriter {
@@ -108,46 +38,30 @@ func newManagedPacketWriter(ctx context.Context, url string, config *SplitHTTPCo
 	}
 	maxBufferedBytes := config.GetNormalizedScMaxBufferedPosts() * maxUploadSize
 	w := &managedPacketWriter{
-		ctx:              ctx,
-		url:              url,
-		config:           config,
-		sessionID:        sessionID,
-		lease:            lease,
-		maxUploadSize:    maxUploadSize,
-		maxBufferedBytes: maxBufferedBytes,
-		minPostInterval:  config.GetNormalizedScMinPostsInterval(),
-		done:             make(chan struct{}),
+		ctx:             ctx,
+		url:             url,
+		config:          config,
+		sessionID:       sessionID,
+		lease:           lease,
+		maxUploadSize:   maxUploadSize,
+		minPostInterval: config.GetNormalizedScMinPostsInterval(),
+		pipeline:        newUploadPipe(maxBufferedBytes),
+		done:            make(chan struct{}),
 	}
-	w.cond = sync.NewCond(&w.mu)
 	go w.run()
 	return w
 }
 
 func (w *managedPacketWriter) nextChunk() ([]byte, string, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	for {
-		if w.writeErr != nil {
-			return nil, "", w.writeErr
-		}
-		if w.buffer.Len() > 0 {
-			size := w.maxUploadSize
-			if size <= 0 || size > w.buffer.Len() {
-				size = w.buffer.Len()
-			}
-			chunk := make([]byte, size)
-			_, _ = w.buffer.Read(chunk)
-			seqStr := strconv.FormatInt(w.seq, 10)
-			w.seq++
-			w.cond.Broadcast()
-			return chunk, seqStr, nil
-		}
-		if w.closed {
-			return nil, "", io.EOF
-		}
-		w.cond.Wait()
+	chunk, err := w.pipeline.ReadChunk(w.maxUploadSize)
+	if err != nil {
+		return nil, "", err
 	}
+	w.mu.Lock()
+	seqStr := strconv.FormatInt(w.seq, 10)
+	w.seq++
+	w.mu.Unlock()
+	return chunk, seqStr, nil
 }
 
 func (w *managedPacketWriter) fail(err error) {
@@ -155,8 +69,8 @@ func (w *managedPacketWriter) fail(err error) {
 	if w.writeErr == nil {
 		w.writeErr = err
 	}
-	w.cond.Broadcast()
 	w.mu.Unlock()
+	w.pipeline.Interrupt(err)
 }
 
 func (w *managedPacketWriter) run() {
@@ -190,31 +104,23 @@ func (w *managedPacketWriter) run() {
 
 func (w *managedPacketWriter) Write(b []byte) (int, error) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	for {
-		if w.writeErr != nil {
-			return 0, w.writeErr
-		}
-		if w.closed {
-			return 0, io.ErrClosedPipe
-		}
-		if w.maxBufferedBytes <= 0 || w.buffer.Len()+len(b) <= w.maxBufferedBytes {
-			break
-		}
-		w.cond.Wait()
+	err := w.writeErr
+	closed := w.closed
+	w.mu.Unlock()
+	if err != nil {
+		return 0, err
 	}
-
-	_, _ = w.buffer.Write(b)
-	w.cond.Signal()
-	return len(b), nil
+	if closed {
+		return 0, io.ErrClosedPipe
+	}
+	return w.pipeline.Write(b)
 }
 
 func (w *managedPacketWriter) Close() error {
 	w.mu.Lock()
 	w.closed = true
-	w.cond.Broadcast()
 	w.mu.Unlock()
+	_ = w.pipeline.Close()
 	<-w.done
 	return nil
 }
@@ -277,19 +183,6 @@ func newSharedStreamLease(ctx context.Context, config *SplitHTTPConfig, httpVers
 	lease := newXmuxLease(ctx, config, httpVersion)
 	lease.acquire()
 	return lease
-}
-
-func resolveDialMode(config *SplitHTTPConfig, runtime DialRuntime) string {
-	if config.Mode != "" && config.Mode != "auto" {
-		return config.Mode
-	}
-	if runtime.HasReality {
-		if config.DownloadConfig != nil {
-			return "stream-up"
-		}
-		return "stream-one"
-	}
-	return "packet-up"
 }
 
 func dialWithVersion(ctx context.Context, config *SplitHTTPConfig, httpVersion string, runtime DialRuntime) (net.Conn, error) {
