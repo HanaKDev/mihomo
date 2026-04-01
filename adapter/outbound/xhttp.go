@@ -33,7 +33,7 @@ type SplitHTTPOptions struct {
 	SeqKey              string            `proxy:"seq-key,omitempty"`
 	UplinkDataPlacement string            `proxy:"uplink-data-placement,omitempty"`
 	UplinkDataKey       string            `proxy:"uplink-data-key,omitempty"`
-	RequestLog          bool              `proxy:"request-log,omitempty"`
+	RequestLog          *bool             `proxy:"request-log,omitempty"`
 	TryQUIC             *bool             `proxy:"try-quic,omitempty"`
 }
 
@@ -72,9 +72,15 @@ func buildSplitHTTPClientKey(dialAddr, tlsServerName, host string, alpn []string
 
 func buildSplitHTTPConfig(ctx context.Context, addr string, tlsServerName string, alpn []string, xhttpOpts SplitHTTPOptions, splitHTTPOpts SplitHTTPOptions, tlsEnabled bool) *splithttp.SplitHTTPConfig {
 	host, _, _ := net.SplitHostPort(addr)
-	requestLog := xhttpOpts.RequestLog || splitHTTPOpts.RequestLog
+	requestLog := log.Level() == log.DEBUG
 	if os.Getenv("MIHOMO_XHTTP_DEBUG") == "1" {
 		requestLog = true
+	}
+	if xhttpOpts.RequestLog != nil {
+		requestLog = *xhttpOpts.RequestLog
+	}
+	if splitHTTPOpts.RequestLog != nil {
+		requestLog = *splitHTTPOpts.RequestLog
 	}
 	tryQuic := true
 	if xhttpOpts.TryQUIC != nil {
@@ -169,9 +175,6 @@ func buildSplitHTTPConfig(ctx context.Context, addr string, tlsServerName string
 	}
 	if splitHTTPOpts.UplinkDataKey != "" {
 		config.UplinkDataKey = splitHTTPOpts.UplinkDataKey
-	}
-	if splitHTTPOpts.RequestLog {
-		config.RequestLog = true
 	}
 
 	for k, v := range xhttpOpts.Headers {
