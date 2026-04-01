@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+var dialerClientFactory = createHTTPClient
+
 type xmuxLease struct {
 	ctx         context.Context
 	key         string
@@ -21,7 +23,7 @@ func newXmuxLease(ctx context.Context, config *SplitHTTPConfig, httpVersion stri
 		config:      config,
 		httpVersion: httpVersion,
 		create: func() DialerClient {
-			return createHTTPClient(config, httpVersion)
+			return dialerClientFactory(config, httpVersion)
 		},
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ type fakePacketDialerClient struct {
 	mu      sync.Mutex
 	closed  bool
 	posts   []fakePacketPost
+	opens   []fakeOpenStreamCall
 	openErr error
 	postErr error
 }
@@ -23,10 +25,28 @@ type fakePacketPost struct {
 	payload   string
 }
 
+type fakeOpenStreamCall struct {
+	url        string
+	sessionID  string
+	uploadOnly bool
+	hasBody    bool
+}
+
 func (f *fakePacketDialerClient) IsClosed() bool { return f.closed }
 
-func (f *fakePacketDialerClient) OpenStream(context.Context, string, string, io.Reader, bool) (io.ReadCloser, net.Addr, net.Addr, error) {
-	return nil, nil, nil, f.openErr
+func (f *fakePacketDialerClient) OpenStream(_ context.Context, url string, sessionID string, body io.Reader, uploadOnly bool) (io.ReadCloser, net.Addr, net.Addr, error) {
+	f.mu.Lock()
+	f.opens = append(f.opens, fakeOpenStreamCall{
+		url:        url,
+		sessionID:  sessionID,
+		uploadOnly: uploadOnly,
+		hasBody:    body != nil,
+	})
+	f.mu.Unlock()
+	if f.openErr != nil {
+		return nil, nil, nil, f.openErr
+	}
+	return io.NopCloser(strings.NewReader("")), nil, nil, nil
 }
 
 func (f *fakePacketDialerClient) PostPacket(_ context.Context, _ string, sessionID string, seqStr string, payload []byte) error {
@@ -137,5 +157,116 @@ func TestXmuxLeaseRotatesAfterRequestBudget(t *testing.T) {
 	}
 	if len(created) != 2 {
 		t.Fatalf("expected 2 created clients, got %d", len(created))
+	}
+}
+
+func TestDialWithVersionStreamUpUsesDownloadConfig(t *testing.T) {
+	previousManager := globalClientManager
+	previousFactory := dialerClientFactory
+	globalClientManager = &clientManager{clients: map[string]*XmuxManager{}}
+	defer func() {
+		globalClientManager = previousManager
+		dialerClientFactory = previousFactory
+	}()
+
+	clientByKey := map[string]*fakePacketDialerClient{}
+	dialerClientFactory = func(config *SplitHTTPConfig, httpVersion string) DialerClient {
+		key := sharedClientKey(config, httpVersion)
+		client := &fakePacketDialerClient{}
+		clientByKey[key] = client
+		return client
+	}
+
+	config := &SplitHTTPConfig{
+		ClientKey: "upload",
+		Host:      "upload.example.com",
+		Path:      "/up",
+		DialTransport: func(context.Context, string) (net.Conn, error) {
+			return nil, nil
+		},
+		DownloadConfig: &SplitHTTPConfig{
+			ClientKey: "download",
+			Host:      "download.example.com",
+			Path:      "/down",
+			DialTransport: func(context.Context, string) (net.Conn, error) {
+				return nil, nil
+			},
+		},
+	}
+
+	conn, err := dialWithVersion(context.Background(), config, "2", DialRuntime{HasReality: true})
+	if err != nil {
+		t.Fatalf("dialWithVersion failed: %v", err)
+	}
+	_ = conn.Close()
+
+	upClient := clientByKey[sharedClientKey(config, "2")]
+	downClient := clientByKey[sharedClientKey(config.DownloadConfig, "2")]
+	if upClient == nil || downClient == nil {
+		t.Fatalf("expected separate upload and download clients")
+	}
+	if len(downClient.opens) == 0 || downClient.opens[0].url != "https://download.example.com/down/" || downClient.opens[0].uploadOnly {
+		t.Fatalf("unexpected download open call: %+v", downClient.opens)
+	}
+	if len(upClient.opens) == 0 || upClient.opens[0].url != "https://upload.example.com/up/" || !upClient.opens[0].uploadOnly {
+		t.Fatalf("unexpected upload open call: %+v", upClient.opens)
+	}
+}
+
+func TestDialWithVersionPacketUpUsesDownloadConfigForDownstream(t *testing.T) {
+	previousManager := globalClientManager
+	previousFactory := dialerClientFactory
+	globalClientManager = &clientManager{clients: map[string]*XmuxManager{}}
+	defer func() {
+		globalClientManager = previousManager
+		dialerClientFactory = previousFactory
+	}()
+
+	clientByKey := map[string]*fakePacketDialerClient{}
+	dialerClientFactory = func(config *SplitHTTPConfig, httpVersion string) DialerClient {
+		key := sharedClientKey(config, httpVersion)
+		client := &fakePacketDialerClient{}
+		clientByKey[key] = client
+		return client
+	}
+
+	config := &SplitHTTPConfig{
+		ClientKey: "upload-packet",
+		Host:      "upload.example.com",
+		Path:      "/up",
+		DialTransport: func(context.Context, string) (net.Conn, error) {
+			return nil, nil
+		},
+		ScMaxEachPostBytes: &RangeConfig{From: 4, To: 4},
+		ScMaxBufferedPosts: 4,
+		DownloadConfig: &SplitHTTPConfig{
+			ClientKey: "download-packet",
+			Host:      "download.example.com",
+			Path:      "/down",
+			DialTransport: func(context.Context, string) (net.Conn, error) {
+				return nil, nil
+			},
+		},
+	}
+
+	conn, err := dialWithVersion(context.Background(), config, "2", DialRuntime{})
+	if err != nil {
+		t.Fatalf("dialWithVersion failed: %v", err)
+	}
+	if _, err := conn.Write([]byte("abcd")); err != nil {
+		t.Fatalf("conn.Write failed: %v", err)
+	}
+	_ = conn.Close()
+
+	upClient := clientByKey[sharedClientKey(config, "2")]
+	downClient := clientByKey[sharedClientKey(config.DownloadConfig, "2")]
+	if upClient == nil || downClient == nil {
+		t.Fatalf("expected separate upload and download clients")
+	}
+	if len(downClient.opens) == 0 || downClient.opens[0].url != "https://download.example.com/down/" || downClient.opens[0].uploadOnly {
+		t.Fatalf("unexpected downstream open call: %+v", downClient.opens)
+	}
+	if len(upClient.posts) == 0 || upClient.posts[0].payload != "abcd" {
+		t.Fatalf("unexpected upload posts: %+v", upClient.posts)
 	}
 }
