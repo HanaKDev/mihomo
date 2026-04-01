@@ -2,65 +2,79 @@ package splithttp
 
 import (
 	"context"
-	"io"
-	"net"
 	"testing"
 )
 
-type fakeDialerClient struct {
-	closed bool
+type fakeXmuxConn struct{}
+
+func (f *fakeXmuxConn) IsClosed() bool { return false }
+
+func TestXmuxManagerMaxConnections(t *testing.T) {
+	manager := NewXmuxManager(XmuxConfig{
+		MaxConnections: &RangeConfig{From: 4, To: 4},
+	}, func() XmuxConn {
+		return &fakeXmuxConn{}
+	})
+
+	clients := map[*XmuxClient]struct{}{}
+	for i := 0; i < 8; i++ {
+		clients[manager.GetXmuxClient(context.Background())] = struct{}{}
+	}
+
+	if len(clients) != 4 {
+		t.Fatalf("expected 4 distinct xmux clients, got %d", len(clients))
+	}
 }
 
-func (f *fakeDialerClient) IsClosed() bool {
-	return f.closed
+func TestXmuxManagerCMaxReuseTimes(t *testing.T) {
+	manager := NewXmuxManager(XmuxConfig{
+		CMaxReuseTimes: &RangeConfig{From: 2, To: 2},
+	}, func() XmuxConn {
+		return &fakeXmuxConn{}
+	})
+
+	clients := map[*XmuxClient]struct{}{}
+	for i := 0; i < 64; i++ {
+		clients[manager.GetXmuxClient(context.Background())] = struct{}{}
+	}
+
+	if len(clients) != 32 {
+		t.Fatalf("expected 32 distinct xmux clients, got %d", len(clients))
+	}
 }
 
-func (f *fakeDialerClient) OpenStream(context.Context, string, string, io.Reader, bool) (io.ReadCloser, net.Addr, net.Addr, error) {
-	return nil, nil, nil, io.EOF
+func TestXmuxManagerMaxConcurrency(t *testing.T) {
+	manager := NewXmuxManager(XmuxConfig{
+		MaxConcurrency: &RangeConfig{From: 2, To: 2},
+	}, func() XmuxConn {
+		return &fakeXmuxConn{}
+	})
+
+	clients := map[*XmuxClient]struct{}{}
+	for i := 0; i < 64; i++ {
+		client := manager.GetXmuxClient(context.Background())
+		client.OpenUsage.Add(1)
+		clients[client] = struct{}{}
+	}
+
+	if len(clients) != 32 {
+		t.Fatalf("expected 32 distinct xmux clients, got %d", len(clients))
+	}
 }
 
-func (f *fakeDialerClient) PostPacket(context.Context, string, string, string, []byte) error {
-	return io.EOF
-}
+func TestXmuxManagerDefaultReuse(t *testing.T) {
+	manager := NewXmuxManager(XmuxConfig{}, func() XmuxConn {
+		return &fakeXmuxConn{}
+	})
 
-func TestClientManagerAcquireReuseAndRecreate(t *testing.T) {
-	mgr := &clientManager{clients: map[string]*sharedClient{}}
-	created := 0
-	var firstRaw *fakeDialerClient
-
-	create := func() DialerClient {
-		created++
-		c := &fakeDialerClient{}
-		if firstRaw == nil {
-			firstRaw = c
-		}
-		return c
+	clients := map[*XmuxClient]struct{}{}
+	for i := 0; i < 64; i++ {
+		client := manager.GetXmuxClient(context.Background())
+		client.OpenUsage.Add(1)
+		clients[client] = struct{}{}
 	}
 
-	s1 := mgr.acquire("k", create)
-	s2 := mgr.acquire("k", create)
-	if s1 != s2 {
-		t.Fatalf("expected same shared client instance for same key")
-	}
-	if created != 1 {
-		t.Fatalf("unexpected create count: got %d want 1", created)
-	}
-	if got := s1.openUsage.Load(); got != 2 {
-		t.Fatalf("open usage mismatch: got %d want 2", got)
-	}
-
-	s1.release()
-	s2.release()
-	if got := s1.openUsage.Load(); got != 0 {
-		t.Fatalf("open usage after release mismatch: got %d want 0", got)
-	}
-
-	firstRaw.closed = true
-	s3 := mgr.acquire("k", create)
-	if s3 == s1 {
-		t.Fatalf("expected recreate when previous client is closed")
-	}
-	if created != 2 {
-		t.Fatalf("unexpected create count after recreate: got %d want 2", created)
+	if len(clients) != 1 {
+		t.Fatalf("expected 1 distinct xmux client, got %d", len(clients))
 	}
 }

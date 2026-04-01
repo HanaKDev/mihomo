@@ -15,7 +15,7 @@ type managedPacketWriter struct {
 	url       string
 	config    *SplitHTTPConfig
 	sessionID string
-	shared    *sharedClient
+	shared    *XmuxClient
 	seq       int64
 	closed    bool
 }
@@ -26,7 +26,7 @@ func (w *managedPacketWriter) Write(b []byte) (int, error) {
 	}
 	seqStr := strconv.FormatInt(w.seq, 10)
 	w.seq++
-	if err := w.shared.client.PostPacket(w.ctx, w.url, w.sessionID, seqStr, b); err != nil {
+	if err := w.shared.dialerClient().PostPacket(w.ctx, w.url, w.sessionID, seqStr, b); err != nil {
 		return 0, err
 	}
 	return len(b), nil
@@ -66,13 +66,13 @@ func sharedClientKey(config *SplitHTTPConfig, httpVersion string) string {
 	return config.ClientKey + "|" + httpVersion
 }
 
-func openSharedStream(ctx context.Context, config *SplitHTTPConfig, httpVersion, url, sessionID string, body io.Reader, uploadOnly bool) (io.ReadCloser, net.Addr, net.Addr, *sharedClient, error) {
+func openSharedStream(ctx context.Context, config *SplitHTTPConfig, httpVersion, url, sessionID string, body io.Reader, uploadOnly bool) (io.ReadCloser, net.Addr, net.Addr, *XmuxClient, error) {
 	key := sharedClientKey(config, httpVersion)
-	shared := globalClientManager.acquire(key, func() DialerClient {
+	shared := globalClientManager.acquire(ctx, key, config, func() DialerClient {
 		return createHTTPClient(config, httpVersion)
 	})
 
-	reader, remoteAddr, localAddr, err := shared.client.OpenStream(ctx, url, sessionID, body, uploadOnly)
+	reader, remoteAddr, localAddr, err := shared.dialerClient().OpenStream(ctx, url, sessionID, body, uploadOnly)
 	if err != nil {
 		shared.release()
 		return nil, nil, nil, nil, err
@@ -96,8 +96,8 @@ func dialWithVersion(ctx context.Context, config *SplitHTTPConfig, httpVersion s
 	downloadURL := fmt.Sprintf("https://%s%s", downloadConfig.Host, downloadConfig.GetNormalizedPath())
 	reader, writer := io.Pipe()
 
-	var sharedUpload *sharedClient
-	var sharedDownload *sharedClient
+	var sharedUpload *XmuxClient
+	var sharedDownload *XmuxClient
 	var remoteAddr net.Addr
 	var localAddr net.Addr
 	var err error
@@ -139,7 +139,7 @@ func dialWithVersion(ctx context.Context, config *SplitHTTPConfig, httpVersion s
 	if mode == "stream-up" {
 		if downloadConfig == config {
 			sharedUpload = sharedDownload
-			_, _, _, err = sharedUpload.client.OpenStream(ctx, uploadURL, sessionID, reader, true)
+			_, _, _, err = sharedUpload.dialerClient().OpenStream(ctx, uploadURL, sessionID, reader, true)
 		} else {
 			_, _, _, sharedUpload, err = openSharedStream(ctx, config, httpVersion, uploadURL, sessionID, reader, true)
 		}
@@ -167,7 +167,7 @@ func dialWithVersion(ctx context.Context, config *SplitHTTPConfig, httpVersion s
 		shared:    sharedDownload,
 	}
 	if downloadConfig != config {
-		sharedUpload = globalClientManager.acquire(sharedClientKey(config, httpVersion), func() DialerClient {
+		sharedUpload = globalClientManager.acquire(ctx, sharedClientKey(config, httpVersion), config, func() DialerClient {
 			return createHTTPClient(config, httpVersion)
 		})
 		packetWriter.shared = sharedUpload
