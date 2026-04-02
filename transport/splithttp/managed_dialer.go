@@ -14,6 +14,8 @@ import (
 )
 
 type managedPacketWriter struct {
+	id        uint64
+	clientID  uint64
 	ctx       context.Context
 	url       string
 	config    *SplitHTTPConfig
@@ -37,8 +39,13 @@ func newManagedPacketWriter(ctx context.Context, url string, config *SplitHTTPCo
 	if maxUploadSize <= 0 {
 		maxUploadSize = 1
 	}
-	maxBufferedBytes := config.GetNormalizedScMaxBufferedPosts() * maxUploadSize
+	clientID := uint64(0)
+	if lease != nil && lease.client != nil {
+		clientID = lease.client.ID
+	}
 	w := &managedPacketWriter{
+		id:              splitHTTPDiagWriterIDs.Add(1),
+		clientID:        clientID,
 		ctx:             ctx,
 		url:             url,
 		config:          config,
@@ -46,9 +53,14 @@ func newManagedPacketWriter(ctx context.Context, url string, config *SplitHTTPCo
 		lease:           lease,
 		maxUploadSize:   maxUploadSize,
 		minPostInterval: config.GetNormalizedScMinPostsInterval(),
-		pipeline:        multibuffer.New(maxBufferedBytes),
-		done:            make(chan struct{}),
+		// Keep packet-up buffering close to Xray's bounded upload pipe.
+		// Allowing ScMaxBufferedPosts * maxUploadSize per session causes
+		// resident memory to explode under concurrent packet-up uploads.
+		pipeline: multibuffer.New(maxUploadSize),
+		done:     make(chan struct{}),
 	}
+	active := splitHTTPDiagActiveWriters.Add(1)
+	splitHTTPDiagWarn("managed-writer create id=%d session=%s client=%d active=%d url=%s", w.id, sessionID, w.clientID, active, url)
 	go w.run()
 	return w
 }
@@ -76,6 +88,15 @@ func (w *managedPacketWriter) fail(err error) {
 
 func (w *managedPacketWriter) run() {
 	defer close(w.done)
+	defer func() {
+		active := splitHTTPDiagActiveWriters.Add(-1)
+		w.mu.Lock()
+		err := w.writeErr
+		closed := w.closed
+		seq := w.seq
+		w.mu.Unlock()
+		splitHTTPDiagWarn("managed-writer exit id=%d session=%s client=%d active=%d closed=%t seq=%d err=%v", w.id, w.sessionID, w.clientID, active, closed, seq, err)
+	}()
 
 	for {
 		chunk, seqStr, err := w.nextChunk()
@@ -121,6 +142,7 @@ func (w *managedPacketWriter) Close() error {
 	w.mu.Lock()
 	w.closed = true
 	w.mu.Unlock()
+	splitHTTPDiagWarn("managed-writer close-request id=%d session=%s client=%d", w.id, w.sessionID, w.clientID)
 	_ = w.pipeline.Close()
 	<-w.done
 	return nil
@@ -193,6 +215,12 @@ func dialWithVersion(ctx context.Context, config *SplitHTTPConfig, httpVersion s
 	if mode != "stream-one" {
 		sessionID = utils.NewUUIDV4().String()
 	}
+	splitHTTPDiagWarn("dial start session=%s mode=%s http=%s upload_host=%s download_host=%s", sessionID, mode, httpVersion, config.Host, func() string {
+		if config.DownloadConfig != nil {
+			return config.DownloadConfig.Host
+		}
+		return config.Host
+	}())
 
 	uploadURL := fmt.Sprintf("https://%s%s", config.Host, config.GetNormalizedPath())
 	downloadConfig := config
@@ -222,13 +250,19 @@ func dialWithVersion(ctx context.Context, config *SplitHTTPConfig, httpVersion s
 			_ = writer.Close()
 			return nil, err
 		}
-		return &managedConn{
+		conn := &managedConn{
+			id:         splitHTTPDiagConnIDs.Add(1),
+			sessionID:  sessionID,
+			mode:       mode,
 			writer:     writer,
 			reader:     body,
 			remoteAddr: remoteAddr,
 			localAddr:  localAddr,
 			onClose:    releaseAll,
-		}, nil
+		}
+		active := splitHTTPDiagActiveConns.Add(1)
+		splitHTTPDiagWarn("managed-conn create id=%d session=%s mode=%s active=%d", conn.id, conn.sessionID, conn.mode, active)
+		return conn, nil
 	}
 
 	var downBody io.ReadCloser
@@ -248,23 +282,35 @@ func dialWithVersion(ctx context.Context, config *SplitHTTPConfig, httpVersion s
 			releaseAll()
 			return nil, err
 		}
-		return &managedConn{
+		conn := &managedConn{
+			id:         splitHTTPDiagConnIDs.Add(1),
+			sessionID:  sessionID,
+			mode:       mode,
 			writer:     writer,
 			reader:     downBody,
 			remoteAddr: remoteAddr,
 			localAddr:  localAddr,
 			onClose:    releaseAll,
-		}, nil
+		}
+		active := splitHTTPDiagActiveConns.Add(1)
+		splitHTTPDiagWarn("managed-conn create id=%d session=%s mode=%s active=%d", conn.id, conn.sessionID, conn.mode, active)
+		return conn, nil
 	}
 
 	packetWriter := newManagedPacketWriter(ctx, uploadURL, config, sessionID, uploadLease)
-	return &managedConn{
+	conn := &managedConn{
+		id:         splitHTTPDiagConnIDs.Add(1),
+		sessionID:  sessionID,
+		mode:       mode,
 		writer:     packetWriter,
 		reader:     downBody,
 		remoteAddr: remoteAddr,
 		localAddr:  localAddr,
 		onClose:    releaseAll,
-	}, nil
+	}
+	active := splitHTTPDiagActiveConns.Add(1)
+	splitHTTPDiagWarn("managed-conn create id=%d session=%s mode=%s active=%d", conn.id, conn.sessionID, conn.mode, active)
+	return conn, nil
 }
 
 func DialContextWithOptions(ctx context.Context, config *SplitHTTPConfig, runtime DialRuntime) (net.Conn, error) {

@@ -12,9 +12,11 @@ import (
 
 type XmuxConn interface {
 	IsClosed() bool
+	Close() error
 }
 
 type XmuxClient struct {
+	ID           uint64
 	XmuxConn     XmuxConn
 	OpenUsage    atomic.Int32
 	leftUsage    int32
@@ -51,6 +53,7 @@ func NewXmuxManager(xmuxConfig XmuxConfig, newConnFunc func() XmuxConn) *XmuxMan
 
 func (m *XmuxManager) newXmuxClient() *XmuxClient {
 	xmuxClient := &XmuxClient{
+		ID:        splitHTTPDiagClientIDs.Add(1),
 		XmuxConn:  m.newConnFunc(),
 		leftUsage: -1,
 	}
@@ -65,6 +68,8 @@ func (m *XmuxManager) newXmuxClient() *XmuxClient {
 		xmuxClient.UnreusableAt = time.Now().Add(time.Duration(x) * time.Second)
 	}
 	m.xmuxClients = append(m.xmuxClients, xmuxClient)
+	active := splitHTTPDiagActiveClients.Add(1)
+	splitHTTPDiagWarn("xmux-client create id=%d active=%d open_usage=%d left_usage=%d left_requests=%d", xmuxClient.ID, active, xmuxClient.OpenUsage.Load(), xmuxClient.leftUsage, xmuxClient.LeftRequests.Load())
 	return xmuxClient
 }
 
@@ -75,11 +80,25 @@ func (m *XmuxManager) GetXmuxClient(ctx context.Context) *XmuxClient {
 	_ = ctx
 	for i := 0; i < len(m.xmuxClients); {
 		xmuxClient := m.xmuxClients[i]
+		reason := ""
 		if xmuxClient.XmuxConn.IsClosed() ||
 			xmuxClient.leftUsage == 0 ||
 			xmuxClient.LeftRequests.Load() <= 0 ||
 			(!xmuxClient.UnreusableAt.IsZero() && time.Now().After(xmuxClient.UnreusableAt)) {
+			switch {
+			case xmuxClient.XmuxConn.IsClosed():
+				reason = "closed"
+			case xmuxClient.leftUsage == 0:
+				reason = "left-usage-exhausted"
+			case xmuxClient.LeftRequests.Load() <= 0:
+				reason = "request-budget-exhausted"
+			default:
+				reason = "expired"
+			}
+			_ = xmuxClient.XmuxConn.Close()
 			m.xmuxClients = append(m.xmuxClients[:i], m.xmuxClients[i+1:]...)
+			active := splitHTTPDiagActiveClients.Add(-1)
+			splitHTTPDiagWarn("xmux-client retire id=%d reason=%s active=%d open_usage=%d left_usage=%d left_requests=%d", xmuxClient.ID, reason, active, xmuxClient.OpenUsage.Load(), xmuxClient.leftUsage, xmuxClient.LeftRequests.Load())
 			continue
 		}
 		i++

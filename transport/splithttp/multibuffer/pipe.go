@@ -5,6 +5,8 @@ import (
 	"sync"
 )
 
+const DefaultChunkSize = 8 * 1024
+
 type Pipeline interface {
 	Write([]byte) (int, error)
 	ReadChunk(maxBytes int) ([]byte, error)
@@ -12,45 +14,80 @@ type Pipeline interface {
 	Interrupt(error)
 }
 
+type chunk struct {
+	data []byte
+	off  int
+}
+
 type Pipe struct {
-	mu          sync.Mutex
-	cond        *sync.Cond
-	queue       [][]byte
-	buffered    int
-	limit       int
-	closed      bool
-	interrupted bool
-	err         error
+	mu        sync.Mutex
+	cond      *sync.Cond
+	queue     []chunk
+	buffered  int
+	limit     int
+	chunkSize int
+	closed    bool
+	err       error
 }
 
 func New(limit int) *Pipe {
-	p := &Pipe{limit: limit}
+	p := &Pipe{
+		limit:     limit,
+		chunkSize: DefaultChunkSize,
+	}
 	p.cond = sync.NewCond(&p.mu)
 	return p
 }
 
 func (p *Pipe) Write(b []byte) (int, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	written := 0
+	for written < len(b) {
+		p.mu.Lock()
+		for {
+			if p.err != nil {
+				p.mu.Unlock()
+				if written > 0 {
+					return written, p.err
+				}
+				return 0, p.err
+			}
+			if p.closed {
+				p.mu.Unlock()
+				if written > 0 {
+					return written, io.ErrClosedPipe
+				}
+				return 0, io.ErrClosedPipe
+			}
+			if p.limit <= 0 || p.buffered < p.limit {
+				break
+			}
+			p.cond.Wait()
+		}
 
-	for {
-		if p.err != nil {
-			return 0, p.err
+		available := len(b) - written
+		if p.limit > 0 {
+			remaining := p.limit - p.buffered
+			if remaining < available {
+				available = remaining
+			}
 		}
-		if p.closed {
-			return 0, io.ErrClosedPipe
+		if available > p.chunkSize {
+			available = p.chunkSize
 		}
-		if p.limit <= 0 || p.buffered+len(b) <= p.limit {
-			break
+		if available <= 0 {
+			p.mu.Unlock()
+			continue
 		}
-		p.cond.Wait()
+
+		buf := make([]byte, available)
+		copy(buf, b[written:written+available])
+		p.queue = append(p.queue, chunk{data: buf})
+		p.buffered += available
+		written += available
+		p.cond.Signal()
+		p.mu.Unlock()
 	}
-
-	copied := append([]byte(nil), b...)
-	p.queue = append(p.queue, copied)
-	p.buffered += len(copied)
-	p.cond.Signal()
-	return len(b), nil
+	return written, nil
 }
 
 func (p *Pipe) ReadChunk(maxBytes int) ([]byte, error) {
@@ -64,9 +101,6 @@ func (p *Pipe) ReadChunk(maxBytes int) ([]byte, error) {
 		if p.err != nil {
 			return nil, p.err
 		}
-		if p.interrupted {
-			return nil, io.ErrClosedPipe
-		}
 		if p.closed {
 			return nil, io.EOF
 		}
@@ -77,19 +111,19 @@ func (p *Pipe) ReadChunk(maxBytes int) ([]byte, error) {
 		maxBytes = p.buffered
 	}
 
-	out := make([]byte, 0, minInt(maxBytes, p.buffered))
-	for len(p.queue) > 0 && len(out) < maxBytes {
-		head := p.queue[0]
-		need := maxBytes - len(out)
-		if len(head) <= need {
-			out = append(out, head...)
+	outLen := minInt(maxBytes, p.buffered)
+	out := make([]byte, outLen)
+	read := 0
+	for len(p.queue) > 0 && read < outLen {
+		head := &p.queue[0]
+		n := copy(out[read:], head.data[head.off:])
+		head.off += n
+		read += n
+		p.buffered -= n
+		if head.off == len(head.data) {
+			p.queue[0] = chunk{}
 			p.queue = p.queue[1:]
-			p.buffered -= len(head)
-			continue
 		}
-		out = append(out, head[:need]...)
-		p.queue[0] = append([]byte(nil), head[need:]...)
-		p.buffered -= need
 	}
 	p.cond.Broadcast()
 	return out, nil
@@ -103,7 +137,11 @@ func (p *Pipe) Interrupt(err error) {
 	if p.err == nil {
 		p.err = err
 	}
-	p.interrupted = true
+	for i := range p.queue {
+		p.queue[i] = chunk{}
+	}
+	p.queue = nil
+	p.buffered = 0
 	p.cond.Broadcast()
 	p.mu.Unlock()
 }

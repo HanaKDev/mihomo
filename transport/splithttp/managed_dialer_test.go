@@ -35,6 +35,13 @@ type fakeOpenStreamCall struct {
 
 func (f *fakePacketDialerClient) IsClosed() bool { return f.closed }
 
+func (f *fakePacketDialerClient) Close() error {
+	f.mu.Lock()
+	f.closed = true
+	f.mu.Unlock()
+	return nil
+}
+
 func (f *fakePacketDialerClient) OpenStream(_ context.Context, url string, sessionID string, body io.Reader, uploadOnly bool) (io.ReadCloser, net.Addr, net.Addr, error) {
 	f.mu.Lock()
 	f.opens = append(f.opens, fakeOpenStreamCall{

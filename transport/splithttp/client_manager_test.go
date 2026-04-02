@@ -5,9 +5,15 @@ import (
 	"testing"
 )
 
-type fakeXmuxConn struct{}
+type fakeXmuxConn struct {
+	closed bool
+}
 
-func (f *fakeXmuxConn) IsClosed() bool { return false }
+func (f *fakeXmuxConn) IsClosed() bool { return f.closed }
+func (f *fakeXmuxConn) Close() error {
+	f.closed = true
+	return nil
+}
 
 func TestXmuxManagerMaxConnections(t *testing.T) {
 	manager := NewXmuxManager(XmuxConfig{
@@ -76,5 +82,30 @@ func TestXmuxManagerDefaultReuse(t *testing.T) {
 
 	if len(clients) != 1 {
 		t.Fatalf("expected 1 distinct xmux client, got %d", len(clients))
+	}
+}
+
+func TestXmuxManagerClosesRetiredClients(t *testing.T) {
+	stale := &fakeXmuxConn{}
+	manager := &XmuxManager{
+		xmuxConfig: XmuxConfig{},
+		newConnFunc: func() XmuxConn {
+			return &fakeXmuxConn{}
+		},
+		xmuxClients: []*XmuxClient{
+			{
+				XmuxConn:  stale,
+				leftUsage: 0,
+			},
+		},
+	}
+
+	client := manager.GetXmuxClient(context.Background())
+
+	if !stale.closed {
+		t.Fatal("expected retired xmux client to be closed")
+	}
+	if client == nil || client.XmuxConn == stale {
+		t.Fatal("expected a fresh xmux client")
 	}
 }

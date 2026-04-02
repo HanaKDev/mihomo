@@ -120,3 +120,47 @@ func TestPipeWriteAfterInterrupt(t *testing.T) {
 		t.Fatalf("Write error = %v, want %v", err, wantErr)
 	}
 }
+
+func TestPipeLargeWriteRespectsBoundedCapacity(t *testing.T) {
+	pipe := New(4)
+	done := make(chan struct{})
+	writeErr := make(chan error, 1)
+
+	go func() {
+		defer close(done)
+		_, err := pipe.Write([]byte("abcdef"))
+		writeErr <- err
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("large Write returned before capacity was drained")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	first, err := pipe.ReadChunk(4)
+	if err != nil {
+		t.Fatalf("first ReadChunk failed: %v", err)
+	}
+	if string(first) != "abcd" {
+		t.Fatalf("first ReadChunk = %q, want %q", string(first), "abcd")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for blocked large Write to resume")
+	}
+
+	if err := <-writeErr; err != nil {
+		t.Fatalf("large Write failed: %v", err)
+	}
+
+	second, err := pipe.ReadChunk(4)
+	if err != nil {
+		t.Fatalf("second ReadChunk failed: %v", err)
+	}
+	if string(second) != "ef" {
+		t.Fatalf("second ReadChunk = %q, want %q", string(second), "ef")
+	}
+}

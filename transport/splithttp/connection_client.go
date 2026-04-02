@@ -8,6 +8,9 @@ import (
 )
 
 type managedConn struct {
+	id         uint64
+	sessionID  string
+	mode       string
 	writer     io.WriteCloser
 	reader     io.ReadCloser
 	remoteAddr net.Addr
@@ -35,6 +38,8 @@ func (c *managedConn) Close() error {
 		if c.onClose != nil {
 			c.onClose()
 		}
+		active := splitHTTPDiagActiveConns.Add(-1)
+		splitHTTPDiagWarn("managed-conn close id=%d session=%s mode=%s active=%d", c.id, c.sessionID, c.mode, active)
 	})
 	return err
 }
