@@ -60,7 +60,7 @@ func newManagedPacketWriter(ctx context.Context, url string, config *SplitHTTPCo
 		done:     make(chan struct{}),
 	}
 	active := splitHTTPDiagActiveWriters.Add(1)
-	splitHTTPDiagWarn("managed-writer create id=%d session=%s client=%d active=%d url=%s", w.id, sessionID, w.clientID, active, url)
+	splitHTTPDiagLog(config, "managed-writer create id=%d session=%s client=%d active=%d url=%s", w.id, sessionID, w.clientID, active, url)
 	go w.run()
 	return w
 }
@@ -95,7 +95,7 @@ func (w *managedPacketWriter) run() {
 		closed := w.closed
 		seq := w.seq
 		w.mu.Unlock()
-		splitHTTPDiagWarn("managed-writer exit id=%d session=%s client=%d active=%d closed=%t seq=%d err=%v", w.id, w.sessionID, w.clientID, active, closed, seq, err)
+		splitHTTPDiagLog(w.config, "managed-writer exit id=%d session=%s client=%d active=%d closed=%t seq=%d err=%v", w.id, w.sessionID, w.clientID, active, closed, seq, err)
 	}()
 
 	for {
@@ -142,7 +142,7 @@ func (w *managedPacketWriter) Close() error {
 	w.mu.Lock()
 	w.closed = true
 	w.mu.Unlock()
-	splitHTTPDiagWarn("managed-writer close-request id=%d session=%s client=%d", w.id, w.sessionID, w.clientID)
+	splitHTTPDiagLog(w.config, "managed-writer close-request id=%d session=%s client=%d", w.id, w.sessionID, w.clientID)
 	_ = w.pipeline.Close()
 	<-w.done
 	return nil
@@ -215,7 +215,7 @@ func dialWithVersion(ctx context.Context, config *SplitHTTPConfig, httpVersion s
 	if mode != "stream-one" {
 		sessionID = utils.NewUUIDV4().String()
 	}
-	splitHTTPDiagWarn("dial start session=%s mode=%s http=%s upload_host=%s download_host=%s", sessionID, mode, httpVersion, config.Host, func() string {
+	splitHTTPDiagLog(config, "dial start session=%s mode=%s http=%s upload_host=%s download_host=%s", sessionID, mode, httpVersion, config.Host, func() string {
 		if config.DownloadConfig != nil {
 			return config.DownloadConfig.Host
 		}
@@ -254,6 +254,7 @@ func dialWithVersion(ctx context.Context, config *SplitHTTPConfig, httpVersion s
 			id:         splitHTTPDiagConnIDs.Add(1),
 			sessionID:  sessionID,
 			mode:       mode,
+			config:     config,
 			writer:     writer,
 			reader:     body,
 			remoteAddr: remoteAddr,
@@ -261,7 +262,7 @@ func dialWithVersion(ctx context.Context, config *SplitHTTPConfig, httpVersion s
 			onClose:    releaseAll,
 		}
 		active := splitHTTPDiagActiveConns.Add(1)
-		splitHTTPDiagWarn("managed-conn create id=%d session=%s mode=%s active=%d", conn.id, conn.sessionID, conn.mode, active)
+		splitHTTPDiagLog(config, "managed-conn create id=%d session=%s mode=%s active=%d", conn.id, conn.sessionID, conn.mode, active)
 		return conn, nil
 	}
 
@@ -286,6 +287,7 @@ func dialWithVersion(ctx context.Context, config *SplitHTTPConfig, httpVersion s
 			id:         splitHTTPDiagConnIDs.Add(1),
 			sessionID:  sessionID,
 			mode:       mode,
+			config:     config,
 			writer:     writer,
 			reader:     downBody,
 			remoteAddr: remoteAddr,
@@ -293,7 +295,7 @@ func dialWithVersion(ctx context.Context, config *SplitHTTPConfig, httpVersion s
 			onClose:    releaseAll,
 		}
 		active := splitHTTPDiagActiveConns.Add(1)
-		splitHTTPDiagWarn("managed-conn create id=%d session=%s mode=%s active=%d", conn.id, conn.sessionID, conn.mode, active)
+		splitHTTPDiagLog(config, "managed-conn create id=%d session=%s mode=%s active=%d", conn.id, conn.sessionID, conn.mode, active)
 		return conn, nil
 	}
 
@@ -302,6 +304,7 @@ func dialWithVersion(ctx context.Context, config *SplitHTTPConfig, httpVersion s
 		id:         splitHTTPDiagConnIDs.Add(1),
 		sessionID:  sessionID,
 		mode:       mode,
+		config:     config,
 		writer:     packetWriter,
 		reader:     downBody,
 		remoteAddr: remoteAddr,
@@ -309,7 +312,7 @@ func dialWithVersion(ctx context.Context, config *SplitHTTPConfig, httpVersion s
 		onClose:    releaseAll,
 	}
 	active := splitHTTPDiagActiveConns.Add(1)
-	splitHTTPDiagWarn("managed-conn create id=%d session=%s mode=%s active=%d", conn.id, conn.sessionID, conn.mode, active)
+	splitHTTPDiagLog(config, "managed-conn create id=%d session=%s mode=%s active=%d", conn.id, conn.sessionID, conn.mode, active)
 	return conn, nil
 }
 

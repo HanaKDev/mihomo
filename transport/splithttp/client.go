@@ -42,7 +42,7 @@ func createHTTPClient(config *SplitHTTPConfig, httpVersion string) DialerClient 
 			httpVersion:     httpVersion,
 		}
 		active := splitHTTPDiagActiveClients.Load()
-		splitHTTPDiagWarn("dialer-client init http=%s host=%s active=%d "+splitHTTPDiagSnapshot(), httpVersion, config.Host, active, splitHTTPDiagActiveClients.Load(), splitHTTPDiagActiveConns.Load(), splitHTTPDiagActiveWriters.Load(), splitHTTPDiagActiveH1Conns.Load(), splitHTTPDiagInFlightOpen.Load(), splitHTTPDiagInFlightPost.Load())
+		splitHTTPDiagLog(config, "dialer-client init http=%s host=%s active=%d "+splitHTTPDiagSnapshot(), httpVersion, config.Host, active, splitHTTPDiagActiveClients.Load(), splitHTTPDiagActiveConns.Load(), splitHTTPDiagActiveWriters.Load(), splitHTTPDiagActiveH1Conns.Load(), splitHTTPDiagInFlightOpen.Load(), splitHTTPDiagInFlightPost.Load())
 		return client
 	}
 
@@ -82,7 +82,7 @@ func createHTTPClient(config *SplitHTTPConfig, httpVersion string) DialerClient 
 		}
 	}
 	active := splitHTTPDiagActiveClients.Load()
-	splitHTTPDiagWarn("dialer-client init http=%s host=%s active=%d "+splitHTTPDiagSnapshot(), httpVersion, config.Host, active, splitHTTPDiagActiveClients.Load(), splitHTTPDiagActiveConns.Load(), splitHTTPDiagActiveWriters.Load(), splitHTTPDiagActiveH1Conns.Load(), splitHTTPDiagInFlightOpen.Load(), splitHTTPDiagInFlightPost.Load())
+	splitHTTPDiagLog(config, "dialer-client init http=%s host=%s active=%d "+splitHTTPDiagSnapshot(), httpVersion, config.Host, active, splitHTTPDiagActiveClients.Load(), splitHTTPDiagActiveConns.Load(), splitHTTPDiagActiveWriters.Load(), splitHTTPDiagActiveH1Conns.Load(), splitHTTPDiagInFlightOpen.Load(), splitHTTPDiagInFlightPost.Load())
 	return client
 }
 
@@ -97,7 +97,7 @@ func (c *DefaultDialerClient) markClosed() {
 	}
 	c.closeUploadConns()
 	if !alreadyClosed {
-		splitHTTPDiagWarn("dialer-client close http=%s host=%s "+splitHTTPDiagSnapshot(), c.httpVersion, c.transportConfig.Host, splitHTTPDiagActiveClients.Load(), splitHTTPDiagActiveConns.Load(), splitHTTPDiagActiveWriters.Load(), splitHTTPDiagActiveH1Conns.Load(), splitHTTPDiagInFlightOpen.Load(), splitHTTPDiagInFlightPost.Load())
+		splitHTTPDiagLog(c.transportConfig, "dialer-client close http=%s host=%s "+splitHTTPDiagSnapshot(), c.httpVersion, c.transportConfig.Host, splitHTTPDiagActiveClients.Load(), splitHTTPDiagActiveConns.Load(), splitHTTPDiagActiveWriters.Load(), splitHTTPDiagActiveH1Conns.Load(), splitHTTPDiagInFlightOpen.Load(), splitHTTPDiagInFlightPost.Load())
 	}
 }
 
@@ -111,7 +111,7 @@ func (c *DefaultDialerClient) trackUploadConn(conn *H1Conn) {
 	c.uploadConns[conn] = struct{}{}
 	c.uploadMu.Unlock()
 	active := splitHTTPDiagActiveH1Conns.Add(1)
-	splitHTTPDiagWarn("h1-upload track http=%s host=%s active_h1=%d", c.httpVersion, c.transportConfig.Host, active)
+	splitHTTPDiagLog(c.transportConfig, "h1-upload track http=%s host=%s active_h1=%d", c.httpVersion, c.transportConfig.Host, active)
 }
 
 func (c *DefaultDialerClient) untrackUploadConn(conn *H1Conn) {
@@ -121,7 +121,7 @@ func (c *DefaultDialerClient) untrackUploadConn(conn *H1Conn) {
 	c.uploadMu.Unlock()
 	if existed {
 		active := splitHTTPDiagActiveH1Conns.Add(-1)
-		splitHTTPDiagWarn("h1-upload untrack http=%s host=%s active_h1=%d", c.httpVersion, c.transportConfig.Host, active)
+		splitHTTPDiagLog(c.transportConfig, "h1-upload untrack http=%s host=%s active_h1=%d", c.httpVersion, c.transportConfig.Host, active)
 	}
 }
 
@@ -135,7 +135,7 @@ func (c *DefaultDialerClient) closeUploadConns() {
 	c.uploadMu.Unlock()
 	if len(conns) > 0 {
 		active := splitHTTPDiagActiveH1Conns.Add(int64(-len(conns)))
-		splitHTTPDiagWarn("h1-upload bulk-close http=%s host=%s closed=%d active_h1=%d", c.httpVersion, c.transportConfig.Host, len(conns), active)
+		splitHTTPDiagLog(c.transportConfig, "h1-upload bulk-close http=%s host=%s closed=%d active_h1=%d", c.httpVersion, c.transportConfig.Host, len(conns), active)
 	}
 
 	for _, conn := range conns {
@@ -149,10 +149,10 @@ func (c *DefaultDialerClient) OpenStream(ctx context.Context, url string, sessio
 	meta := connTelemetry{}
 	reqID := splitHTTPDiagReqIDs.Add(1)
 	inFlight := splitHTTPDiagInFlightOpen.Add(1)
-	splitHTTPDiagWarn("open-stream start req=%d session=%s upload_only=%t http=%s host=%s in_flight=%d", reqID, sessionID, uploadOnly, c.httpVersion, c.transportConfig.Host, inFlight)
+	splitHTTPDiagLog(c.transportConfig, "open-stream start req=%d session=%s upload_only=%t http=%s host=%s in_flight=%d", reqID, sessionID, uploadOnly, c.httpVersion, c.transportConfig.Host, inFlight)
 	defer func() {
 		inFlight := splitHTTPDiagInFlightOpen.Add(-1)
-		splitHTTPDiagWarn("open-stream return req=%d session=%s upload_only=%t http=%s host=%s in_flight=%d", reqID, sessionID, uploadOnly, c.httpVersion, c.transportConfig.Host, inFlight)
+		splitHTTPDiagLog(c.transportConfig, "open-stream return req=%d session=%s upload_only=%t http=%s host=%s in_flight=%d", reqID, sessionID, uploadOnly, c.httpVersion, c.transportConfig.Host, inFlight)
 	}()
 	var gotConn sync.Once
 	gotConnCh := make(chan struct{})
@@ -233,10 +233,10 @@ func (c *DefaultDialerClient) PostPacket(ctx context.Context, url string, sessio
 	method := c.transportConfig.GetNormalizedUplinkHTTPMethod()
 	reqID := splitHTTPDiagReqIDs.Add(1)
 	inFlight := splitHTTPDiagInFlightPost.Add(1)
-	splitHTTPDiagWarn("post-packet start req=%d session=%s seq=%s http=%s host=%s bytes=%d in_flight=%d", reqID, sessionID, seqStr, c.httpVersion, c.transportConfig.Host, len(payload), inFlight)
+	splitHTTPDiagLog(c.transportConfig, "post-packet start req=%d session=%s seq=%s http=%s host=%s bytes=%d in_flight=%d", reqID, sessionID, seqStr, c.httpVersion, c.transportConfig.Host, len(payload), inFlight)
 	defer func() {
 		inFlight := splitHTTPDiagInFlightPost.Add(-1)
-		splitHTTPDiagWarn("post-packet return req=%d session=%s seq=%s http=%s host=%s in_flight=%d", reqID, sessionID, seqStr, c.httpVersion, c.transportConfig.Host, inFlight)
+		splitHTTPDiagLog(c.transportConfig, "post-packet return req=%d session=%s seq=%s http=%s host=%s in_flight=%d", reqID, sessionID, seqStr, c.httpVersion, c.transportConfig.Host, inFlight)
 	}()
 	var remoteAddr net.Addr
 	var localAddr net.Addr

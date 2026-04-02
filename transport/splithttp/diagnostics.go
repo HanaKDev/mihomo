@@ -20,8 +20,11 @@ var (
 	splitHTTPDiagInFlightPost  atomic.Int64
 )
 
-func splitHTTPDiagWarn(format string, v ...any) {
-	log.Warnln("[splithttp-diag] "+format, v...)
+func splitHTTPDiagLog(config *SplitHTTPConfig, format string, v ...any) {
+	if config == nil || !config.RequestLog {
+		return
+	}
+	log.Infoln("[splithttp-diag] "+format, v...)
 }
 
 func splitHTTPDiagSnapshot() string {

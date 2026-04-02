@@ -34,7 +34,7 @@ func (l *xmuxLease) acquire() {
 	}
 	l.client = globalClientManager.acquire(l.ctx, l.key, l.config, l.create)
 	if l.client != nil {
-		splitHTTPDiagWarn("xmux-lease acquire key=%s client=%d open_usage=%d left_requests=%d", l.key, l.client.ID, l.client.OpenUsage.Load(), l.client.LeftRequests.Load())
+		splitHTTPDiagLog(l.config, "xmux-lease acquire key=%s client=%d open_usage=%d left_requests=%d", l.key, l.client.ID, l.client.OpenUsage.Load(), l.client.LeftRequests.Load())
 	}
 }
 
@@ -49,7 +49,7 @@ func (l *xmuxLease) release() {
 	if l.client == nil {
 		return
 	}
-	splitHTTPDiagWarn("xmux-lease release key=%s client=%d open_usage=%d left_requests=%d", l.key, l.client.ID, l.client.OpenUsage.Load(), l.client.LeftRequests.Load())
+	splitHTTPDiagLog(l.config, "xmux-lease release key=%s client=%d open_usage=%d left_requests=%d", l.key, l.client.ID, l.client.OpenUsage.Load(), l.client.LeftRequests.Load())
 	l.client.release()
 	l.client = nil
 }
@@ -72,6 +72,6 @@ func (l *xmuxLease) rotateForPacket(now time.Time) {
 		l.client.release()
 		l.client = next
 		l.client.LeftRequests.Add(-1)
-		splitHTTPDiagWarn("xmux-lease rotate key=%s prev=%d next=%d expired=%t next_left_requests=%d", l.key, prevID, l.client.ID, expired, l.client.LeftRequests.Load())
+		splitHTTPDiagLog(l.config, "xmux-lease rotate key=%s prev=%d next=%d expired=%t next_left_requests=%d", l.key, prevID, l.client.ID, expired, l.client.LeftRequests.Load())
 	}
 }

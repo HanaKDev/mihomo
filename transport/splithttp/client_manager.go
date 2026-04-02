@@ -34,6 +34,7 @@ func (c *XmuxClient) release() {
 
 type XmuxManager struct {
 	mu          sync.Mutex
+	config      *SplitHTTPConfig
 	xmuxConfig  XmuxConfig
 	concurrency int32
 	connections int32
@@ -41,8 +42,9 @@ type XmuxManager struct {
 	xmuxClients []*XmuxClient
 }
 
-func NewXmuxManager(xmuxConfig XmuxConfig, newConnFunc func() XmuxConn) *XmuxManager {
+func NewXmuxManager(config *SplitHTTPConfig, xmuxConfig XmuxConfig, newConnFunc func() XmuxConn) *XmuxManager {
 	return &XmuxManager{
+		config:      config,
 		xmuxConfig:  xmuxConfig,
 		concurrency: int32(xmuxConfig.GetNormalizedMaxConcurrency().rand()),
 		connections: int32(xmuxConfig.GetNormalizedMaxConnections().rand()),
@@ -69,7 +71,7 @@ func (m *XmuxManager) newXmuxClient() *XmuxClient {
 	}
 	m.xmuxClients = append(m.xmuxClients, xmuxClient)
 	active := splitHTTPDiagActiveClients.Add(1)
-	splitHTTPDiagWarn("xmux-client create id=%d active=%d open_usage=%d left_usage=%d left_requests=%d", xmuxClient.ID, active, xmuxClient.OpenUsage.Load(), xmuxClient.leftUsage, xmuxClient.LeftRequests.Load())
+	splitHTTPDiagLog(m.config, "xmux-client create id=%d active=%d open_usage=%d left_usage=%d left_requests=%d", xmuxClient.ID, active, xmuxClient.OpenUsage.Load(), xmuxClient.leftUsage, xmuxClient.LeftRequests.Load())
 	return xmuxClient
 }
 
@@ -98,7 +100,7 @@ func (m *XmuxManager) GetXmuxClient(ctx context.Context) *XmuxClient {
 			_ = xmuxClient.XmuxConn.Close()
 			m.xmuxClients = append(m.xmuxClients[:i], m.xmuxClients[i+1:]...)
 			active := splitHTTPDiagActiveClients.Add(-1)
-			splitHTTPDiagWarn("xmux-client retire id=%d reason=%s active=%d open_usage=%d left_usage=%d left_requests=%d", xmuxClient.ID, reason, active, xmuxClient.OpenUsage.Load(), xmuxClient.leftUsage, xmuxClient.LeftRequests.Load())
+			splitHTTPDiagLog(m.config, "xmux-client retire id=%d reason=%s active=%d open_usage=%d left_usage=%d left_requests=%d", xmuxClient.ID, reason, active, xmuxClient.OpenUsage.Load(), xmuxClient.leftUsage, xmuxClient.LeftRequests.Load())
 			continue
 		}
 		i++
@@ -150,7 +152,7 @@ func (m *clientManager) acquire(ctx context.Context, key string, config *SplitHT
 	m.mu.Lock()
 	manager, ok := m.clients[key]
 	if !ok {
-		manager = NewXmuxManager(config.GetNormalizedXmux(), func() XmuxConn {
+		manager = NewXmuxManager(config, config.GetNormalizedXmux(), func() XmuxConn {
 			return create()
 		})
 		m.clients[key] = manager
