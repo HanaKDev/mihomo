@@ -2,6 +2,7 @@ package outbound
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -35,7 +36,7 @@ type Vless struct {
 	encryption *encryption.ClientInstance
 
 	// for gun mux
-	gunTransport *gun.Transport
+	gunClient *gun.Client
 
 	realityConfig *tlsC.RealityConfig
 	echConfig     *ech.Config
@@ -72,6 +73,7 @@ type VlessOption struct {
 	ServerName        string            `proxy:"servername,omitempty"`
 	ClientFingerprint string            `proxy:"client-fingerprint,omitempty"`
 }
+
 func (v *Vless) StreamConnContext(ctx context.Context, c net.Conn, metadata *C.Metadata) (_ net.Conn, err error) {
 	switch v.option.Network {
 	case "xhttp", "splithttp":
@@ -356,7 +358,7 @@ func (v *Vless) buildSplitHTTPConfig(ctx context.Context) (*splithttp.SplitHTTPC
 func (v *Vless) dialContext(ctx context.Context) (c net.Conn, err error) {
 	switch v.option.Network {
 	case "grpc": // gun transport
-		return v.gunTransport.Dial()
+		return v.gunClient.Dial()
 	default:
 	}
 	return v.dialer.DialContext(ctx, "tcp", v.addr)
@@ -463,10 +465,13 @@ func (v *Vless) ProxyInfo() C.ProxyInfo {
 
 // Close implements C.ProxyAdapter
 func (v *Vless) Close() error {
-	if v.gunTransport != nil {
-		return v.gunTransport.Close()
+	var errs []error
+	if v.gunClient != nil {
+		if err := v.gunClient.Close(); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func parseVlessAddr(metadata *C.Metadata, xudp bool) *vless.DstAddr {
@@ -603,7 +608,14 @@ func NewVless(option VlessOption) (*Vless, error) {
 			}
 		}
 
-		v.gunTransport = gun.NewTransport(dialFn, tlsConfig, gunConfig)
+		v.gunClient = gun.NewClient(
+			func() *gun.Transport {
+				return gun.NewTransport(dialFn, tlsConfig, gunConfig)
+			},
+			option.GrpcOpts.MaxConnections,
+			option.GrpcOpts.MinStreams,
+			option.GrpcOpts.MaxStreams,
+		)
 	}
 
 	return v, nil

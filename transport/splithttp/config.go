@@ -97,6 +97,7 @@ type SplitHTTPConfig struct {
 	ScMinPostsInterval   *RangeConfig
 	ScMaxBufferedPosts   int
 	ScStreamUpServerSec  *RangeConfig
+	NoSSEHeader          bool
 	SessionPlacement     string
 	SessionKey           string
 	SeqPlacement         string

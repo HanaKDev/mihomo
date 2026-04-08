@@ -16,7 +16,7 @@ func (f *fakeXmuxConn) Close() error {
 }
 
 func TestXmuxManagerMaxConnections(t *testing.T) {
-	manager := NewXmuxManager(XmuxConfig{
+	manager := NewXmuxManager(nil, XmuxConfig{
 		MaxConnections: &RangeConfig{From: 4, To: 4},
 	}, func() XmuxConn {
 		return &fakeXmuxConn{}
@@ -33,7 +33,7 @@ func TestXmuxManagerMaxConnections(t *testing.T) {
 }
 
 func TestXmuxManagerCMaxReuseTimes(t *testing.T) {
-	manager := NewXmuxManager(XmuxConfig{
+	manager := NewXmuxManager(nil, XmuxConfig{
 		CMaxReuseTimes: &RangeConfig{From: 2, To: 2},
 	}, func() XmuxConn {
 		return &fakeXmuxConn{}
@@ -50,7 +50,7 @@ func TestXmuxManagerCMaxReuseTimes(t *testing.T) {
 }
 
 func TestXmuxManagerMaxConcurrency(t *testing.T) {
-	manager := NewXmuxManager(XmuxConfig{
+	manager := NewXmuxManager(nil, XmuxConfig{
 		MaxConcurrency: &RangeConfig{From: 2, To: 2},
 	}, func() XmuxConn {
 		return &fakeXmuxConn{}
@@ -69,7 +69,7 @@ func TestXmuxManagerMaxConcurrency(t *testing.T) {
 }
 
 func TestXmuxManagerDefaultReuse(t *testing.T) {
-	manager := NewXmuxManager(XmuxConfig{}, func() XmuxConn {
+	manager := NewXmuxManager(nil, XmuxConfig{}, func() XmuxConn {
 		return &fakeXmuxConn{}
 	})
 
