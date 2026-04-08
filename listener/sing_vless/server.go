@@ -177,7 +177,6 @@ func New(config LC.VlessServer, tunnel C.Tunnel, additions ...inbound.Addition) 
 			httpMux.Handle("/", httpServer.Handler)
 		}
 		httpServer.Handler = httpMux
-
 		if !slices.Contains(tlsConfig.NextProtos, "h2") {
 			tlsConfig.NextProtos = append([]string{"h2"}, tlsConfig.NextProtos...)
 		}
