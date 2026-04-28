@@ -194,12 +194,43 @@ func New(config LC.VlessServer, tunnel C.Tunnel, additions ...inbound.Addition) 
 		if err != nil {
 			return nil, errors.New("invalid xhttp sc-max-each-post-bytes")
 		}
+		xPaddingBytes, err := parseSplitHTTPRangeString(config.XHTTPConfig.XPaddingBytes)
+		if err != nil {
+			return nil, errors.New("invalid xhttp x-padding-bytes")
+		}
+		uplinkChunkSize, err := parseSplitHTTPRangeString(config.XHTTPConfig.UplinkChunkSize)
+		if err != nil {
+			return nil, errors.New("invalid xhttp uplink-chunk-size")
+		}
+		scMaxBufferedPosts := 0
+		if config.XHTTPConfig.ScMaxBufferedPosts != "" {
+			scMaxBufferedPosts, err = strconv.Atoi(config.XHTTPConfig.ScMaxBufferedPosts)
+			if err != nil {
+				return nil, errors.New("invalid xhttp sc-max-buffered-posts")
+			}
+		}
 		importSplithttpConfig := &splithttp.SplitHTTPConfig{
 			Path:                config.XHTTPConfig.Path,
 			Host:                config.XHTTPConfig.Host,
+			Mode:                config.XHTTPConfig.Mode,
 			MaxConcurrentPosts:  100,
+			XPaddingBytes:       xPaddingBytes,
+			XPaddingObfsMode:    config.XHTTPConfig.XPaddingObfsMode,
+			XPaddingKey:         config.XHTTPConfig.XPaddingKey,
+			XPaddingHeader:      config.XHTTPConfig.XPaddingHeader,
+			XPaddingPlacement:   config.XHTTPConfig.XPaddingPlacement,
+			XPaddingMethod:      config.XHTTPConfig.XPaddingMethod,
+			UplinkHTTPMethod:    config.XHTTPConfig.UplinkHTTPMethod,
 			NoSSEHeader:         config.XHTTPConfig.NoSSEHeader,
+			SessionPlacement:    config.XHTTPConfig.SessionPlacement,
+			SessionKey:          config.XHTTPConfig.SessionKey,
+			SeqPlacement:        config.XHTTPConfig.SeqPlacement,
+			SeqKey:              config.XHTTPConfig.SeqKey,
+			UplinkDataPlacement: config.XHTTPConfig.UplinkDataPlacement,
+			UplinkDataKey:       config.XHTTPConfig.UplinkDataKey,
+			UplinkChunkSize:     uplinkChunkSize,
 			ScStreamUpServerSec: scStreamUpServerSecs,
+			ScMaxBufferedPosts:  scMaxBufferedPosts,
 			ScMaxEachPostBytes:  scMaxEachPostBytes,
 		}
 		xhttpPath := importSplithttpConfig.GetNormalizedPath()
