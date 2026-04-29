@@ -78,10 +78,12 @@ func TestStartStreamUpKeepaliveWritesPadding(t *testing.T) {
 	req.Header.Set("Referer", "https://example.com/xhttp/?x_padding=XXX")
 
 	writer := newKeepaliveWriter()
+	done := make(chan struct{})
 	startStreamUpKeepalive(&SplitHTTPConfig{
 		XPaddingBytes:       &RangeConfig{From: 3, To: 3},
 		ScStreamUpServerSec: &RangeConfig{From: 1, To: 1},
-	}, req, writer)
+	}, req, writer, done)
+	defer close(done)
 
 	select {
 	case <-writer.ch:

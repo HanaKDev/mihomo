@@ -22,7 +22,7 @@ func applyStreamingResponseHeaders(header http.Header, noSSEHeader bool) {
 	header.Set("Content-Type", "text/event-stream")
 }
 
-func startStreamUpKeepalive(config *SplitHTTPConfig, request *http.Request, writer io.Writer) {
+func startStreamUpKeepalive(config *SplitHTTPConfig, request *http.Request, writer io.Writer, done <-chan struct{}) {
 	if request == nil || writer == nil || request.Header.Get("Referer") == "" {
 		return
 	}
@@ -34,6 +34,11 @@ func startStreamUpKeepalive(config *SplitHTTPConfig, request *http.Request, writ
 
 	go func() {
 		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
 			padding := generatePadding(PaddingMethodRepeatX, randInRange(config.GetNormalizedXPaddingBytes()))
 			if padding == "" {
 				return
@@ -41,7 +46,13 @@ func startStreamUpKeepalive(config *SplitHTTPConfig, request *http.Request, writ
 			if _, err := writer.Write([]byte(padding)); err != nil {
 				return
 			}
-			time.Sleep(time.Duration(randInRange(interval)) * time.Second)
+			timer := time.NewTimer(time.Duration(randInRange(interval)) * time.Second)
+			select {
+			case <-done:
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
 		}
 	}()
 }
@@ -124,6 +135,35 @@ func (h *SplitHTTPServer) ServeHTTP(writer http.ResponseWriter, request *http.Re
 
 	sessionId, seqStr := config.ExtractMetaFromRequest(request, path)
 
+	if request.Method == config.GetNormalizedUplinkHTTPMethod() && sessionId != "" && seqStr == "" {
+		// stream-up upload: POST /path/{session}
+		session := h.upsertSession(sessionId)
+		httpSC := &httpServerConn{
+			waitCh:         make(chan struct{}),
+			Reader:         request.Body,
+			ResponseWriter: writer,
+		}
+		if err := session.uploadQueue.Push(Packet{Reader: httpSC}); err != nil {
+			writer.WriteHeader(http.StatusConflict)
+			return
+		}
+
+		applyStreamingResponseHeaders(writer.Header(), config.NoSSEHeader)
+		writer.WriteHeader(http.StatusOK)
+		rc := http.NewResponseController(writer)
+		_ = rc.EnableFullDuplex()
+		_ = rc.Flush()
+
+		startStreamUpKeepalive(config, request, httpSC, httpSC.waitCh)
+
+		select {
+		case <-request.Context().Done():
+		case <-httpSC.waitCh:
+		}
+		httpSC.Close()
+		return
+	}
+
 	if request.Method == config.GetNormalizedUplinkHTTPMethod() && sessionId != "" && seqStr != "" {
 		// packet-up
 		seq, err := strconv.ParseInt(seqStr, 10, 64)
@@ -159,18 +199,10 @@ func (h *SplitHTTPServer) ServeHTTP(writer http.ResponseWriter, request *http.Re
 		return
 	}
 
-	if request.Method == "GET" || request.Method == config.GetNormalizedUplinkHTTPMethod() {
-		// stream-down or stream-one or stream-up
-		mode := "stream-up"
-		if request.Method == "GET" {
-			mode = "stream-down"
-		}
-		if sessionId == "" && request.Method == config.GetNormalizedUplinkHTTPMethod() {
-			mode = "stream-one"
-		}
-
+	if request.Method == "GET" || sessionId == "" {
+		// stream-down or stream-one
 		var currentSession *httpSession
-		if mode != "stream-one" {
+		if sessionId != "" {
 			if sessionId == "" {
 				writer.WriteHeader(http.StatusBadRequest)
 				return
@@ -180,7 +212,7 @@ func (h *SplitHTTPServer) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			defer h.sessions.Delete(sessionId)
 		}
 
-		if mode == "stream-one" {
+		if sessionId == "" {
 			writer.Header().Set("X-Accel-Buffering", "no")
 			writer.Header().Set("Cache-Control", "no-store")
 			writer.Header().Set("Content-Type", "application/grpc")
@@ -188,9 +220,9 @@ func (h *SplitHTTPServer) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			applyStreamingResponseHeaders(writer.Header(), config.NoSSEHeader)
 		}
 		writer.WriteHeader(http.StatusOK)
-		if flusher, ok := writer.(http.Flusher); ok {
-			flusher.Flush()
-		}
+		rc := http.NewResponseController(writer)
+		_ = rc.EnableFullDuplex()
+		_ = rc.Flush()
 
 		httpSC := &httpServerConn{
 			waitCh:         make(chan struct{}),
@@ -205,17 +237,22 @@ func (h *SplitHTTPServer) ServeHTTP(writer http.ResponseWriter, request *http.Re
 		}
 		if currentSession != nil { // if not stream-one
 			conn.reader = currentSession.uploadQueue
-		} else {
-			startStreamUpKeepalive(config, request, httpSC)
 		}
 
-		h.addConn(conn)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			h.addConn(conn)
+		}()
 
 		select {
 		case <-request.Context().Done():
+			conn.Close()
 		case <-httpSC.waitCh:
+			conn.Close()
+		case <-done:
 		}
-		conn.Close()
+		<-done
 	} else {
 		writer.WriteHeader(http.StatusMethodNotAllowed)
 	}
@@ -225,25 +262,49 @@ type httpServerConn struct {
 	sync.Mutex
 	waitCh   chan struct{}
 	waitOnce sync.Once
+	closed   bool
 	io.Reader
 	http.ResponseWriter
 }
 
 func (c *httpServerConn) Close() error {
-	c.waitOnce.Do(func() { close(c.waitCh) })
+	c.waitOnce.Do(func() {
+		c.Lock()
+		c.closeLocked()
+		c.Unlock()
+	})
 	return nil
 }
 
-func (c *httpServerConn) Write(b []byte) (int, error) {
+func (c *httpServerConn) closeLocked() {
+	c.closed = true
+	close(c.waitCh)
+}
+
+func (c *httpServerConn) Write(b []byte) (n int, err error) {
 	c.Lock()
 	defer c.Unlock()
+	if c.closed {
+		return 0, io.ErrClosedPipe
+	}
+	defer func() {
+		if recover() != nil {
+			n = 0
+			err = io.ErrClosedPipe
+			c.waitOnce.Do(func() {
+				c.closeLocked()
+			})
+		}
+	}()
 
-	n, err := c.ResponseWriter.Write(b)
+	n, err = c.ResponseWriter.Write(b)
 	if f, ok := c.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
 	if err != nil {
-		c.Close()
+		c.waitOnce.Do(func() {
+			c.closeLocked()
+		})
 	}
 	return n, err
 }

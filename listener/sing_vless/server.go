@@ -255,8 +255,8 @@ func New(config LC.VlessServer, tunnel C.Tunnel, additions ...inbound.Addition) 
 	}
 	if httpServer.Handler != nil {
 		h2Server := &http.Http2Server{}
-		if realityBuilder != nil {
-			// reality listener is not a standard TLS listener; keep h2c compatibility path.
+		if realityBuilder != nil || tlsConfig.GetCertificate == nil {
+			// XHTTP needs h2c for plain HTTP/2 and for non-standard TLS wrappers like Reality.
 			httpServer.Handler = h2c.NewHandler(httpServer.Handler, h2Server)
 		}
 		if err := http.Http2ConfigureServer(&httpServer, h2Server); err != nil {
