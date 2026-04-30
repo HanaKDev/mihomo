@@ -1,6 +1,8 @@
 package splithttp
 
 import (
+	"bytes"
+	"encoding/base64"
 	"io"
 	"net"
 	"sync"
@@ -10,6 +12,30 @@ import (
 	"github.com/metacubex/http"
 	"github.com/metacubex/http/httptest"
 )
+
+func encodeTestPayload(payload string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(payload))
+}
+
+func TestSplitHTTPConfigDefaultUplinkDataKey(t *testing.T) {
+	tests := []struct {
+		placement string
+		want      string
+	}{
+		{placement: PlacementHeader, want: "X-Data"},
+		{placement: PlacementAuto, want: "X-Data"},
+		{placement: PlacementCookie, want: "x_data"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.placement, func(t *testing.T) {
+			config := &SplitHTTPConfig{UplinkDataPlacement: tc.placement}
+			if got := config.GetNormalizedUplinkDataKey(); got != tc.want {
+				t.Fatalf("unexpected uplink data key: got %q want %q", got, tc.want)
+			}
+		})
+	}
+}
 
 func TestSplitHTTPServerDownloadHeaders(t *testing.T) {
 	tests := []struct {
@@ -49,6 +75,127 @@ func TestSplitHTTPServerDownloadHeaders(t *testing.T) {
 				t.Fatalf("unexpected Cache-Control: got %q want %q", got, "no-store")
 			}
 		})
+	}
+}
+
+func TestSplitHTTPServerPacketUpPayloadPlacement(t *testing.T) {
+	tests := []struct {
+		name      string
+		placement string
+		body      string
+		configure func(*http.Request)
+		want      string
+	}{
+		{
+			name:      "header multi chunk",
+			placement: PlacementHeader,
+			configure: func(req *http.Request) {
+				encoded := encodeTestPayload("hello")
+				req.Header.Set("x_data-0", encoded[:3])
+				req.Header.Set("x_data-1", encoded[3:])
+			},
+			want: "hello",
+		},
+		{
+			name:      "cookie multi chunk",
+			placement: PlacementCookie,
+			configure: func(req *http.Request) {
+				encoded := encodeTestPayload("cookie-data")
+				req.AddCookie(&http.Cookie{Name: "x_data_0", Value: encoded[:4]})
+				req.AddCookie(&http.Cookie{Name: "x_data_1", Value: encoded[4:]})
+			},
+			want: "cookie-data",
+		},
+		{
+			name:      "auto header cookie body order",
+			placement: PlacementAuto,
+			body:      "body",
+			configure: func(req *http.Request) {
+				req.Header.Set("x_data-0", encodeTestPayload("header-"))
+				req.AddCookie(&http.Cookie{Name: "x_data_0", Value: encodeTestPayload("cookie-")})
+			},
+			want: "header-cookie-body",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := NewSplitHTTPServer(&SplitHTTPConfig{
+				Path:                "/xhttp",
+				UplinkDataPlacement: tc.placement,
+				UplinkDataKey:       "x_data",
+			}, func(conn net.Conn) {
+				_ = conn.Close()
+			})
+
+			req := httptest.NewRequest(http.MethodPost, "https://example.com/xhttp/session-1/0", bytes.NewReader([]byte(tc.body)))
+			if tc.configure != nil {
+				tc.configure(req)
+			}
+			recorder := httptest.NewRecorder()
+
+			server.ServeHTTP(recorder, req)
+
+			resp := recorder.Result()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("unexpected status: got %d want %d", resp.StatusCode, http.StatusOK)
+			}
+
+			sessionAny, ok := server.sessions.Load("session-1")
+			if !ok {
+				t.Fatal("expected session to be created")
+			}
+			session := sessionAny.(*httpSession)
+			buf := make([]byte, len(tc.want))
+			n, err := session.uploadQueue.Read(buf)
+			if err != nil {
+				t.Fatalf("failed to read packet payload: %v", err)
+			}
+			if got := string(buf[:n]); got != tc.want {
+				t.Fatalf("unexpected payload: got %q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSplitHTTPServerPacketUpRejectsOversizedPayload(t *testing.T) {
+	server := NewSplitHTTPServer(&SplitHTTPConfig{
+		Path:                "/xhttp",
+		UplinkDataPlacement: PlacementBody,
+		ScMaxEachPostBytes:  &RangeConfig{From: 3, To: 3},
+	}, func(conn net.Conn) {
+		_ = conn.Close()
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "https://example.com/xhttp/session-1/0", bytes.NewReader([]byte("toolong")))
+	recorder := httptest.NewRecorder()
+
+	server.ServeHTTP(recorder, req)
+
+	resp := recorder.Result()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("unexpected status: got %d want %d", resp.StatusCode, http.StatusRequestEntityTooLarge)
+	}
+}
+
+func TestSplitHTTPServerPacketUpRejectsInvalidBase64(t *testing.T) {
+	server := NewSplitHTTPServer(&SplitHTTPConfig{
+		Path:                "/xhttp",
+		UplinkDataPlacement: PlacementHeader,
+		UplinkDataKey:       "x_data",
+	}, func(conn net.Conn) {
+		_ = conn.Close()
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "https://example.com/xhttp/session-1/0", nil)
+	req.Header.Set("x_data-0", "%%%")
+	recorder := httptest.NewRecorder()
+
+	server.ServeHTTP(recorder, req)
+
+	resp := recorder.Result()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unexpected status: got %d want %d", resp.StatusCode, http.StatusBadRequest)
 	}
 }
 

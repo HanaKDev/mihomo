@@ -9,6 +9,7 @@ import (
 	"net"
 
 	"github.com/metacubex/mihomo/common/utils"
+	"github.com/metacubex/mihomo/transport/splithttp"
 	"github.com/metacubex/mihomo/transport/vless"
 	"github.com/metacubex/mihomo/transport/vless/vision"
 
@@ -139,10 +140,18 @@ func (s *Service[T]) NewConnection(ctx context.Context, conn net.Conn, metadata 
 		}
 		return s.handler.NewPacketConnection(ctx, &serverPacketConn{ExtendedConn: bufio.NewExtendedConn(conn), destination: destination}, metadata)
 	case vless.CommandMux:
-		return vmess.HandleMuxConnection(ctx, conn, metadata, s.handler)
+		return s.newMuxConnection(ctx, conn, metadata)
 	default:
 		return E.New("unknown command: ", command)
 	}
+}
+
+func (s *Service[T]) newMuxConnection(ctx context.Context, conn net.Conn, metadata M.Metadata) error {
+	handled, replayConn, err := splithttp.TryHandleVLESSXUDPMux(ctx, conn, metadata, s.handler)
+	if handled || err != nil {
+		return err
+	}
+	return vmess.HandleMuxConnection(ctx, replayConn, metadata, s.handler)
 }
 
 func flowName(value string) string {

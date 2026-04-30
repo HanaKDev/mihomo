@@ -2,6 +2,8 @@ package splithttp
 
 import (
 	"encoding/base64"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strconv"
@@ -11,6 +13,8 @@ import (
 
 	"github.com/metacubex/http"
 )
+
+var errPayloadTooLarge = errors.New("packet-up payload too large")
 
 func applyStreamingResponseHeaders(header http.Header, noSSEHeader bool) {
 	header.Set("X-Accel-Buffering", "no")
@@ -95,12 +99,8 @@ func (h *SplitHTTPServer) upsertSession(sessionId string) *httpSession {
 		return currentSessionAny.(*httpSession)
 	}
 
-	queueSize := h.config.MaxConcurrentPosts
-	if queueSize == 0 {
-		queueSize = 100 // default max concurrent posts
-	}
 	s := &httpSession{
-		uploadQueue:      NewUploadQueue(queueSize),
+		uploadQueue:      NewUploadQueue(h.config.GetNormalizedScMaxBufferedPosts()),
 		isFullyConnected: make(chan struct{}),
 	}
 
@@ -166,34 +166,35 @@ func (h *SplitHTTPServer) ServeHTTP(writer http.ResponseWriter, request *http.Re
 
 	if request.Method == config.GetNormalizedUplinkHTTPMethod() && sessionId != "" && seqStr != "" {
 		// packet-up
-		seq, err := strconv.ParseInt(seqStr, 10, 64)
+		seq, err := strconv.ParseUint(seqStr, 10, 64)
 		if err != nil {
 			writer.WriteHeader(http.StatusBadRequest)
 			return
 		}
 
-		body, err := io.ReadAll(request.Body)
+		payload, bodyPayloadLen, err := h.readPacketPayload(request)
 		if err != nil {
+			if errors.Is(err, errPayloadTooLarge) {
+				writer.WriteHeader(http.StatusRequestEntityTooLarge)
+				return
+			}
 			writer.WriteHeader(http.StatusBadRequest)
 			return
 		}
-
-		// decode body
-		placement := config.GetNormalizedUplinkDataPlacement()
-		var payload []byte
-		if placement == PlacementHeader {
-			encoded := request.Header.Get(config.GetNormalizedUplinkDataKey() + "-0")
-			payload, _ = base64.RawURLEncoding.DecodeString(encoded)
-		} else {
-			payload = body
+		if len(payload) > config.GetNormalizedScMaxEachPostBytes().To {
+			writer.WriteHeader(http.StatusRequestEntityTooLarge)
+			return
 		}
 
 		session := h.upsertSession(sessionId)
-		if err := session.uploadQueue.Push(Packet{Payload: payload, Seq: uint64(seq)}); err != nil {
+		if err := session.uploadQueue.Push(Packet{Payload: payload, Seq: seq}); err != nil {
 			writer.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
+		if bodyPayloadLen == 0 {
+			writer.Header().Set("Cache-Control", "no-store")
+		}
 		writer.Header().Set("Content-Type", "application/grpc")
 		writer.WriteHeader(http.StatusOK)
 		return
@@ -256,6 +257,93 @@ func (h *SplitHTTPServer) ServeHTTP(writer http.ResponseWriter, request *http.Re
 	} else {
 		writer.WriteHeader(http.StatusMethodNotAllowed)
 	}
+}
+
+func (h *SplitHTTPServer) readPacketPayload(request *http.Request) ([]byte, int, error) {
+	config := h.config
+	placement := config.GetNormalizedUplinkDataPlacement()
+	limit := config.GetNormalizedScMaxEachPostBytes().To
+	key := config.GetNormalizedUplinkDataKey()
+
+	var headerPayload []byte
+	if placement == PlacementHeader || placement == PlacementAuto {
+		payload, err := readHeaderPayload(request, key)
+		if err != nil {
+			return nil, 0, err
+		}
+		headerPayload = payload
+	}
+
+	var cookiePayload []byte
+	if placement == PlacementCookie || placement == PlacementAuto {
+		payload, err := readCookiePayload(request, key)
+		if err != nil {
+			return nil, 0, err
+		}
+		cookiePayload = payload
+	}
+
+	var bodyPayload []byte
+	if placement == PlacementBody || placement == PlacementAuto {
+		payload, err := readLimitedBody(request, limit)
+		if err != nil {
+			return nil, 0, err
+		}
+		bodyPayload = payload
+	}
+
+	switch placement {
+	case PlacementHeader:
+		return headerPayload, 0, nil
+	case PlacementCookie:
+		return cookiePayload, 0, nil
+	case PlacementAuto:
+		payload := make([]byte, 0, len(headerPayload)+len(cookiePayload)+len(bodyPayload))
+		payload = append(payload, headerPayload...)
+		payload = append(payload, cookiePayload...)
+		payload = append(payload, bodyPayload...)
+		return payload, len(bodyPayload), nil
+	default:
+		return bodyPayload, len(bodyPayload), nil
+	}
+}
+
+func readHeaderPayload(request *http.Request, key string) ([]byte, error) {
+	var chunks []string
+	for i := 0; ; i++ {
+		chunk := request.Header.Get(fmt.Sprintf("%s-%d", key, i))
+		if chunk == "" {
+			break
+		}
+		chunks = append(chunks, chunk)
+	}
+	return base64.RawURLEncoding.DecodeString(strings.Join(chunks, ""))
+}
+
+func readCookiePayload(request *http.Request, key string) ([]byte, error) {
+	var chunks []string
+	for i := 0; ; i++ {
+		cookie, err := request.Cookie(fmt.Sprintf("%s_%d", key, i))
+		if err != nil || cookie == nil {
+			break
+		}
+		chunks = append(chunks, cookie.Value)
+	}
+	return base64.RawURLEncoding.DecodeString(strings.Join(chunks, ""))
+}
+
+func readLimitedBody(request *http.Request, limit int) ([]byte, error) {
+	if request.ContentLength > int64(limit) {
+		return nil, errPayloadTooLarge
+	}
+	payload, err := io.ReadAll(io.LimitReader(request.Body, int64(limit)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(payload) > limit {
+		return nil, errPayloadTooLarge
+	}
+	return payload, nil
 }
 
 type httpServerConn struct {

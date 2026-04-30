@@ -390,7 +390,7 @@ func (c *SplitHTTPConfig) GetNormalizedUplinkDataKey() string {
 	if c.UplinkDataKey != "" {
 		return c.UplinkDataKey
 	}
-	if c.GetNormalizedUplinkDataPlacement() == PlacementHeader {
+	if c.GetNormalizedUplinkDataPlacement() == PlacementHeader || c.GetNormalizedUplinkDataPlacement() == PlacementAuto {
 		return "X-Data"
 	}
 	if c.GetNormalizedUplinkDataPlacement() == PlacementCookie {

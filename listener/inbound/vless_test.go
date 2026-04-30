@@ -419,8 +419,6 @@ func testInboundVless_XHTTP(t *testing.T, getConfig func() (inbound.VlessOption,
 }
 
 func TestInboundVless_XHTTP_UDP(t *testing.T) {
-	t.Skip("XUDP over xhttp packet-up currently hangs waiting for the VLESS response header")
-
 	testCases := []struct {
 		name string
 		flow string
@@ -432,6 +430,9 @@ func TestInboundVless_XHTTP_UDP(t *testing.T) {
 	for _, testCase := range testCases {
 		testCase := testCase
 		t.Run(testCase.name, func(t *testing.T) {
+			if testCase.flow != "" {
+				t.Skip("XUDP over xhttp with vision requires vision support for splithttp managedConn")
+			}
 			inboundOptions := inbound.VlessOption{
 				Certificate: tlsCertificate,
 				PrivateKey:  tlsPrivateKey,
