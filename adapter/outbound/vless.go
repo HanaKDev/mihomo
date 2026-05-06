@@ -397,6 +397,9 @@ func (v *Vless) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (
 
 	if v.option.Network == "xhttp" || v.option.Network == "splithttp" {
 		if v.option.XUDP {
+			if v.option.Flow == vless.XRV {
+				return nil, fmt.Errorf("vless xhttp xudp does not support %s flow", vless.XRV)
+			}
 			splitConfig, err := v.buildSplitHTTPConfig(ctx)
 			if err != nil {
 				return nil, err

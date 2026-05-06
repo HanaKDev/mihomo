@@ -1,10 +1,16 @@
 package outbound
 
 import (
+	"context"
 	"io"
 	"net"
+	"net/netip"
+	"strings"
 	"testing"
 	"time"
+
+	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/transport/vless"
 )
 
 type earlyHandshakeTestConn struct {
@@ -57,5 +63,33 @@ func TestEarlyHandshakePacketConnCloseOnError(t *testing.T) {
 	}
 	if !conn.closed {
 		t.Fatal("expected connection to be closed on handshake failure")
+	}
+}
+
+func TestVlessXHTTPXUDPVisionRejectedBeforeDial(t *testing.T) {
+	out, err := NewVless(VlessOption{
+		Name:           "xhttp-xudp-vision",
+		Server:         "127.0.0.1",
+		Port:           443,
+		UUID:           "00000000-0000-0000-0000-000000000001",
+		Flow:           vless.XRV,
+		Network:        "xhttp",
+		UDP:            true,
+		PacketEncoding: "xudp",
+	})
+	if err != nil {
+		t.Fatalf("NewVless failed: %v", err)
+	}
+
+	_, err = out.ListenPacketContext(context.Background(), &C.Metadata{
+		NetWork: C.UDP,
+		DstIP:   netip.MustParseAddr("127.0.0.1"),
+		DstPort: 53,
+	})
+	if err == nil {
+		t.Fatal("expected xhttp xudp vision to be rejected")
+	}
+	if !strings.Contains(err.Error(), "does not support xtls-rprx-vision") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
