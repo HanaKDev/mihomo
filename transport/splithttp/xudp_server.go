@@ -144,9 +144,6 @@ func (c *serverXUDPConn) readFrameMetadata() (payloadLen int, destination M.Sock
 		err = E.Cause(net.ErrClosed, "remote closed")
 		return
 	}
-	if option&1 != 1 {
-		return c.readFrameMetadata()
-	}
 
 	if length != 4 {
 		metaLen := length - 4
@@ -167,6 +164,9 @@ func (c *serverXUDPConn) readFrameMetadata() (payloadLen int, destination M.Sock
 			return
 		}
 		destination = destination.Unwrap()
+	}
+	if option&1 != 1 {
+		return c.readFrameMetadata()
 	}
 
 	var payloadLength uint16
