@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +16,10 @@ import (
 
 func encodeTestPayload(payload string) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(payload))
+}
+
+func addTestXPadding(req *http.Request) {
+	req.Header.Set("Referer", "https://example.com/?x_padding="+strings.Repeat("X", 100))
 }
 
 func TestSplitHTTPConfigDefaultUplinkDataKey(t *testing.T) {
@@ -57,6 +62,7 @@ func TestSplitHTTPServerDownloadHeaders(t *testing.T) {
 			})
 
 			req := httptest.NewRequest(http.MethodGet, "https://example.com/xhttp/session-1", nil)
+			addTestXPadding(req)
 			recorder := httptest.NewRecorder()
 
 			server.ServeHTTP(recorder, req)
@@ -129,6 +135,7 @@ func TestSplitHTTPServerPacketUpPayloadPlacement(t *testing.T) {
 			})
 
 			req := httptest.NewRequest(http.MethodPost, "https://example.com/xhttp/session-1/0", bytes.NewReader([]byte(tc.body)))
+			addTestXPadding(req)
 			if tc.configure != nil {
 				tc.configure(req)
 			}
@@ -168,6 +175,7 @@ func TestSplitHTTPServerPacketUpRejectsOversizedPayload(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "https://example.com/xhttp/session-1/0", bytes.NewReader([]byte("toolong")))
+	addTestXPadding(req)
 	recorder := httptest.NewRecorder()
 
 	server.ServeHTTP(recorder, req)
@@ -188,7 +196,85 @@ func TestSplitHTTPServerPacketUpRejectsInvalidBase64(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "https://example.com/xhttp/session-1/0", nil)
+	addTestXPadding(req)
 	req.Header.Set("x_data-0", "%%%")
+	recorder := httptest.NewRecorder()
+
+	server.ServeHTTP(recorder, req)
+
+	resp := recorder.Result()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unexpected status: got %d want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+func TestSplitHTTPServerOptionsCORS(t *testing.T) {
+	server := NewSplitHTTPServer(&SplitHTTPConfig{
+		Path:                "/xhttp",
+		SessionPlacement:    PlacementCookie,
+		UplinkDataPlacement: PlacementCookie,
+	}, func(conn net.Conn) {
+		_ = conn.Close()
+	})
+
+	req := httptest.NewRequest(http.MethodOptions, "https://example.com/xhttp/session-1", nil)
+	req.Header.Set("Origin", "https://browser.example")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	req.Header.Set("Access-Control-Request-Headers", "X-Session, X-Seq")
+	recorder := httptest.NewRecorder()
+
+	server.ServeHTTP(recorder, req)
+
+	resp := recorder.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected status: got %d want %d", resp.StatusCode, http.StatusOK)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "https://browser.example" {
+		t.Fatalf("unexpected allow-origin: got %q", got)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Credentials"); got != "true" {
+		t.Fatalf("unexpected allow-credentials: got %q", got)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Methods"); got != "POST" {
+		t.Fatalf("unexpected allow-methods: got %q", got)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Headers"); got != "X-Session, X-Seq" {
+		t.Fatalf("unexpected allow-headers: got %q", got)
+	}
+	if got := resp.Header.Get("X-Padding"); got == "" {
+		t.Fatal("expected response padding header")
+	}
+}
+
+func TestSplitHTTPServerRejectsInvalidXPadding(t *testing.T) {
+	server := NewSplitHTTPServer(&SplitHTTPConfig{
+		Path:          "/xhttp",
+		XPaddingBytes: &RangeConfig{From: 4, To: 4},
+	}, func(conn net.Conn) {
+		_ = conn.Close()
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/xhttp/session-1?x_padding=XXX", nil)
+	recorder := httptest.NewRecorder()
+
+	server.ServeHTTP(recorder, req)
+
+	resp := recorder.Result()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unexpected status: got %d want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+func TestSplitHTTPServerRejectsDisallowedMode(t *testing.T) {
+	server := NewSplitHTTPServer(&SplitHTTPConfig{
+		Path: "/xhttp",
+		Mode: "stream-one",
+	}, func(conn net.Conn) {
+		_ = conn.Close()
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "https://example.com/xhttp/session-1/0", bytes.NewReader([]byte("payload")))
+	addTestXPadding(req)
 	recorder := httptest.NewRecorder()
 
 	server.ServeHTTP(recorder, req)

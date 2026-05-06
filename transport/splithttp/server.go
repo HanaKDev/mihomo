@@ -129,14 +129,28 @@ func (h *SplitHTTPServer) ServeHTTP(writer http.ResponseWriter, request *http.Re
 		return
 	}
 
-	if paddingAuth := request.Header.Get("X-Padding"); paddingAuth != "" {
-		// skip complex padding, just flush
+	config.WriteResponseHeader(writer, request.Method, request.Header)
+	config.ApplyXPaddingToResponse(writer, config.BuildResponseXPadding())
+	if request.Method == http.MethodOptions {
+		writer.WriteHeader(http.StatusOK)
+		return
+	}
+
+	validRange := config.GetNormalizedXPaddingBytes()
+	paddingValue, _ := config.ExtractXPaddingFromRequest(request, config.XPaddingObfsMode)
+	if !config.IsPaddingValid(paddingValue, validRange.From, validRange.To, PaddingMethod(config.XPaddingMethod)) {
+		writer.WriteHeader(http.StatusBadRequest)
+		return
 	}
 
 	sessionId, seqStr := config.ExtractMetaFromRequest(request, path)
 
 	if request.Method == config.GetNormalizedUplinkHTTPMethod() && sessionId != "" && seqStr == "" {
 		// stream-up upload: POST /path/{session}
+		if config.Mode != "" && config.Mode != "auto" && config.Mode != "stream-up" {
+			writer.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		session := h.upsertSession(sessionId)
 		httpSC := &httpServerConn{
 			waitCh:         make(chan struct{}),
@@ -166,6 +180,10 @@ func (h *SplitHTTPServer) ServeHTTP(writer http.ResponseWriter, request *http.Re
 
 	if request.Method == config.GetNormalizedUplinkHTTPMethod() && sessionId != "" && seqStr != "" {
 		// packet-up
+		if config.Mode != "" && config.Mode != "auto" && config.Mode != "packet-up" {
+			writer.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		seq, err := strconv.ParseUint(seqStr, 10, 64)
 		if err != nil {
 			writer.WriteHeader(http.StatusBadRequest)
@@ -202,6 +220,10 @@ func (h *SplitHTTPServer) ServeHTTP(writer http.ResponseWriter, request *http.Re
 
 	if request.Method == "GET" || sessionId == "" {
 		// stream-down or stream-one
+		if sessionId == "" && config.Mode != "" && config.Mode != "auto" && config.Mode != "stream-one" && config.Mode != "stream-up" {
+			writer.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		var currentSession *httpSession
 		if sessionId != "" {
 			if sessionId == "" {
