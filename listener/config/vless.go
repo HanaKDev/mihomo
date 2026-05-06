@@ -52,6 +52,7 @@ type XHTTPConfig struct {
 	ScStreamUpServerSecs string
 	ScMaxBufferedPosts   string
 	ScMaxEachPostBytes   string
+	ServerMaxHeaderBytes int
 }
 
 func (t VlessServer) String() string {

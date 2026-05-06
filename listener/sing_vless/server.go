@@ -210,28 +210,29 @@ func New(config LC.VlessServer, tunnel C.Tunnel, additions ...inbound.Addition) 
 			}
 		}
 		importSplithttpConfig := &splithttp.SplitHTTPConfig{
-			Path:                config.XHTTPConfig.Path,
-			Host:                config.XHTTPConfig.Host,
-			Mode:                config.XHTTPConfig.Mode,
-			MaxConcurrentPosts:  100,
-			XPaddingBytes:       xPaddingBytes,
-			XPaddingObfsMode:    config.XHTTPConfig.XPaddingObfsMode,
-			XPaddingKey:         config.XHTTPConfig.XPaddingKey,
-			XPaddingHeader:      config.XHTTPConfig.XPaddingHeader,
-			XPaddingPlacement:   config.XHTTPConfig.XPaddingPlacement,
-			XPaddingMethod:      config.XHTTPConfig.XPaddingMethod,
-			UplinkHTTPMethod:    config.XHTTPConfig.UplinkHTTPMethod,
-			NoSSEHeader:         config.XHTTPConfig.NoSSEHeader,
-			SessionPlacement:    config.XHTTPConfig.SessionPlacement,
-			SessionKey:          config.XHTTPConfig.SessionKey,
-			SeqPlacement:        config.XHTTPConfig.SeqPlacement,
-			SeqKey:              config.XHTTPConfig.SeqKey,
-			UplinkDataPlacement: config.XHTTPConfig.UplinkDataPlacement,
-			UplinkDataKey:       config.XHTTPConfig.UplinkDataKey,
-			UplinkChunkSize:     uplinkChunkSize,
-			ScStreamUpServerSec: scStreamUpServerSecs,
-			ScMaxBufferedPosts:  scMaxBufferedPosts,
-			ScMaxEachPostBytes:  scMaxEachPostBytes,
+			Path:                 config.XHTTPConfig.Path,
+			Host:                 config.XHTTPConfig.Host,
+			Mode:                 config.XHTTPConfig.Mode,
+			MaxConcurrentPosts:   100,
+			XPaddingBytes:        xPaddingBytes,
+			XPaddingObfsMode:     config.XHTTPConfig.XPaddingObfsMode,
+			XPaddingKey:          config.XHTTPConfig.XPaddingKey,
+			XPaddingHeader:       config.XHTTPConfig.XPaddingHeader,
+			XPaddingPlacement:    config.XHTTPConfig.XPaddingPlacement,
+			XPaddingMethod:       config.XHTTPConfig.XPaddingMethod,
+			UplinkHTTPMethod:     config.XHTTPConfig.UplinkHTTPMethod,
+			NoSSEHeader:          config.XHTTPConfig.NoSSEHeader,
+			SessionPlacement:     config.XHTTPConfig.SessionPlacement,
+			SessionKey:           config.XHTTPConfig.SessionKey,
+			SeqPlacement:         config.XHTTPConfig.SeqPlacement,
+			SeqKey:               config.XHTTPConfig.SeqKey,
+			UplinkDataPlacement:  config.XHTTPConfig.UplinkDataPlacement,
+			UplinkDataKey:        config.XHTTPConfig.UplinkDataKey,
+			UplinkChunkSize:      uplinkChunkSize,
+			ScStreamUpServerSec:  scStreamUpServerSecs,
+			ScMaxBufferedPosts:   scMaxBufferedPosts,
+			ScMaxEachPostBytes:   scMaxEachPostBytes,
+			ServerMaxHeaderBytes: config.XHTTPConfig.ServerMaxHeaderBytes,
 		}
 		xhttpPath := importSplithttpConfig.GetNormalizedPath()
 		splithttpServer := splithttp.NewSplitHTTPServer(importSplithttpConfig, func(conn net.Conn) {
@@ -252,6 +253,7 @@ func New(config LC.VlessServer, tunnel C.Tunnel, additions ...inbound.Addition) 
 		if !slices.Contains(tlsConfig.NextProtos, "h2") {
 			tlsConfig.NextProtos = append([]string{"h2"}, tlsConfig.NextProtos...)
 		}
+		httpServer.MaxHeaderBytes = importSplithttpConfig.GetNormalizedServerMaxHeaderBytes()
 	}
 	if httpServer.Handler != nil {
 		h2Server := &http.Http2Server{}
