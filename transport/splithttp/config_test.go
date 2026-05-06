@@ -1,6 +1,7 @@
 package splithttp
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 
@@ -40,6 +41,39 @@ func TestApplyExtractMetaRoundTrip(t *testing.T) {
 			}
 			if seq != "7" {
 				t.Fatalf("seq mismatch: got %q want %q", seq, "7")
+			}
+		})
+	}
+}
+
+func TestFillStreamRequestNoGRPCHeader(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   *SplitHTTPConfig
+		wantType string
+	}{
+		{
+			name:     "default grpc header",
+			config:   &SplitHTTPConfig{},
+			wantType: "application/grpc",
+		},
+		{
+			name:     "disabled grpc header",
+			config:   &SplitHTTPConfig{NoGRPCHeader: true},
+			wantType: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPost, "https://example.com/xhttp/", bytes.NewReader([]byte("payload")))
+			if err != nil {
+				t.Fatalf("new request failed: %v", err)
+			}
+
+			tc.config.FillStreamRequest(req, "session-1")
+			if got := req.Header.Get("Content-Type"); got != tc.wantType {
+				t.Fatalf("unexpected content-type: got %q want %q", got, tc.wantType)
 			}
 		})
 	}

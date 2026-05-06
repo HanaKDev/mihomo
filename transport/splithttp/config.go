@@ -97,6 +97,7 @@ type SplitHTTPConfig struct {
 	ScMinPostsInterval   *RangeConfig
 	ScMaxBufferedPosts   int
 	ScStreamUpServerSec  *RangeConfig
+	NoGRPCHeader         bool
 	NoSSEHeader          bool
 	SessionPlacement     string
 	SessionKey           string
@@ -558,7 +559,7 @@ func (c *SplitHTTPConfig) FillStreamRequest(req *http.Request, sessionID string)
 	c.ApplyXPaddingToRequest(req, padding)
 	c.ApplyMetaToRequest(req, sessionID, "")
 
-	if req.Body != nil && req.Header.Get("Content-Type") == "" {
+	if req.Body != nil && !c.NoGRPCHeader && req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", "application/grpc")
 	}
 	if req.Header.Get("User-Agent") == "" {

@@ -93,3 +93,19 @@ func TestVlessXHTTPXUDPVisionRejectedBeforeDial(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestBuildSplitHTTPConfigNoGRPCHeader(t *testing.T) {
+	config := buildSplitHTTPConfig(context.Background(), "example.com:443", "example.com", nil, SplitHTTPOptions{
+		NoGRPCHeader: true,
+	}, SplitHTTPOptions{}, true)
+	if !config.NoGRPCHeader {
+		t.Fatal("expected xhttp no-grpc-header to propagate")
+	}
+
+	config = buildSplitHTTPConfig(context.Background(), "example.com:443", "example.com", nil, SplitHTTPOptions{}, SplitHTTPOptions{
+		NoGRPCHeader: true,
+	}, true)
+	if !config.NoGRPCHeader {
+		t.Fatal("expected splithttp no-grpc-header to override")
+	}
+}
