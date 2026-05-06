@@ -5,7 +5,6 @@ import (
 	"io"
 	"net"
 	"net/netip"
-	"strings"
 	"testing"
 	"time"
 
@@ -66,11 +65,11 @@ func TestEarlyHandshakePacketConnCloseOnError(t *testing.T) {
 	}
 }
 
-func TestVlessXHTTPXUDPVisionRejectedBeforeDial(t *testing.T) {
+func TestVlessXHTTPXUDPVisionUsesNoFlowClient(t *testing.T) {
 	out, err := NewVless(VlessOption{
 		Name:           "xhttp-xudp-vision",
 		Server:         "127.0.0.1",
-		Port:           443,
+		Port:           1,
 		UUID:           "00000000-0000-0000-0000-000000000001",
 		Flow:           vless.XRV,
 		Network:        "xhttp",
@@ -80,6 +79,9 @@ func TestVlessXHTTPXUDPVisionRejectedBeforeDial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewVless failed: %v", err)
 	}
+	if out.xudpClient == out.client {
+		t.Fatal("expected xhttp xudp vision to use a no-flow XUDP client")
+	}
 
 	_, err = out.ListenPacketContext(context.Background(), &C.Metadata{
 		NetWork: C.UDP,
@@ -87,10 +89,7 @@ func TestVlessXHTTPXUDPVisionRejectedBeforeDial(t *testing.T) {
 		DstPort: 53,
 	})
 	if err == nil {
-		t.Fatal("expected xhttp xudp vision to be rejected")
-	}
-	if !strings.Contains(err.Error(), "does not support xtls-rprx-vision") {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatal("expected dial to fail against unused test port")
 	}
 }
 

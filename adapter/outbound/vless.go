@@ -30,8 +30,9 @@ import (
 
 type Vless struct {
 	*Base
-	client *vless.Client
-	option *VlessOption
+	client     *vless.Client
+	xudpClient *vless.Client
+	option     *VlessOption
 
 	encryption *encryption.ClientInstance
 
@@ -397,9 +398,6 @@ func (v *Vless) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (
 
 	if v.option.Network == "xhttp" || v.option.Network == "splithttp" {
 		if v.option.XUDP {
-			if v.option.Flow == vless.XRV {
-				return nil, fmt.Errorf("vless xhttp xudp does not support %s flow", vless.XRV)
-			}
 			splitConfig, err := v.buildSplitHTTPConfig(ctx)
 			if err != nil {
 				return nil, err
@@ -419,7 +417,7 @@ func (v *Vless) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (
 			if metadata.SourceValid() {
 				globalID = utils.GlobalID(metadata.SourceAddress())
 			}
-			pc, err := v.client.DialEarlyXUDPPacketConn(c, globalID, metadata.UDPAddr(), parseVlessAddr(metadata, true))
+			pc, err := v.xudpClient.DialEarlyXUDPPacketConn(c, globalID, metadata.UDPAddr(), parseVlessAddr(metadata, true))
 			if err != nil {
 				_ = c.Close()
 				return nil, fmt.Errorf("%s connect error: %s", v.addr, err.Error())
@@ -578,6 +576,13 @@ func NewVless(option VlessOption) (*Vless, error) {
 	if err != nil {
 		return nil, err
 	}
+	xudpClient := client
+	if option.XUDP && option.Flow == vless.XRV {
+		xudpClient, err = vless.NewClient(option.UUID, nil)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	v := &Vless{
 		Base: NewBase(BaseOption{
@@ -593,8 +598,9 @@ func NewVless(option VlessOption) (*Vless, error) {
 			RoutingMark:  option.RoutingMark,
 			Prefer:       option.IPVersion,
 		}),
-		client: client,
-		option: &option,
+		client:     client,
+		xudpClient: xudpClient,
+		option:     &option,
 	}
 	v.dialer = option.NewDialer(v.DialOptions())
 
