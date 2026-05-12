@@ -94,6 +94,14 @@ func (c *Client) DialEarlyXUDPPacketConn(conn net.Conn, globalID [8]byte, destin
 	return vmessSing.NewXUDPConn(protocolConn, globalID, M.SocksaddrFromNet(destination)), nil
 }
 
+func (c *Client) DialVisionXUDPPacketConn(conn net.Conn, globalID [8]byte, destination net.Addr, dst *DstAddr) (net.PacketConn, error) {
+	rawConn := newBaseConn(conn, c, dst)
+	if _, err := rawConn.Write(nil); err != nil {
+		return nil, err
+	}
+	return vmessSing.NewXUDPConn(vision.NewBodyConn(rawConn, c.uuid), globalID, M.SocksaddrFromNet(destination)), nil
+}
+
 // NewClient return Client instance
 func NewClient(uuidStr string, addons *Addons) (*Client, error) {
 	uid := utils.UUIDMap(uuidStr)

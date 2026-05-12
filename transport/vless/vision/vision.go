@@ -112,6 +112,21 @@ func NewConn(conn net.Conn, tlsConn net.Conn, userUUID uuid.UUID) (*Conn, error)
 	return c, nil
 }
 
+func NewBodyConn(conn net.Conn, userUUID uuid.UUID) *Conn {
+	return &Conn{
+		ExtendedReader:             N.NewExtendedReader(conn),
+		ExtendedWriter:             N.NewExtendedWriter(conn),
+		Conn:                       conn,
+		netConn:                    conn,
+		userUUID:                   userUUID,
+		packetsToFilter:            8,
+		readProcess:                true,
+		readFilterUUID:             true,
+		writeFilterApplicationData: true,
+		writeOnceUserUUID:          userUUID.Bytes(),
+	}
+}
+
 func checkTLSVersion(tlsConn net.Conn) error {
 	switch underlying := tlsConn.(type) {
 	case *gotls.Conn:

@@ -122,9 +122,13 @@ func (s *Service[T]) NewConnection(ctx context.Context, conn net.Conn, metadata 
 	responseConn := &serverConn{ExtendedConn: bufio.NewExtendedConn(conn)}
 	switch requestFlow {
 	case vless.XRV:
-		conn, err = vision.NewConn(responseConn, conn, requestUUID)
-		if err != nil {
-			return E.Cause(err, "initialize vision")
+		if command == vless.CommandMux && splithttp.IsManagedConn(conn) {
+			conn = vision.NewBodyConn(responseConn, requestUUID)
+		} else {
+			conn, err = vision.NewConn(responseConn, conn, requestUUID)
+			if err != nil {
+				return E.Cause(err, "initialize vision")
+			}
 		}
 	case "":
 		conn = responseConn

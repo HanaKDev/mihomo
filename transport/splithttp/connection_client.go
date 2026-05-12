@@ -5,6 +5,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	N "github.com/metacubex/mihomo/common/net"
 )
 
 type managedConn struct {
@@ -55,4 +57,22 @@ func (c *managedConn) SetReadDeadline(time.Time) error {
 }
 func (c *managedConn) SetWriteDeadline(time.Time) error {
 	return nil
+}
+
+func IsManagedConn(conn net.Conn) bool {
+	for {
+		switch conn.(type) {
+		case *managedConn, *splitConn:
+			return true
+		}
+		upstream, ok := conn.(N.WithUpstream)
+		if !ok {
+			return false
+		}
+		next, ok := upstream.Upstream().(net.Conn)
+		if !ok || next == conn {
+			return false
+		}
+		conn = next
+	}
 }

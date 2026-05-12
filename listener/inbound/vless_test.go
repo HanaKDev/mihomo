@@ -430,9 +430,6 @@ func TestInboundVless_XHTTP_UDP(t *testing.T) {
 	for _, testCase := range testCases {
 		testCase := testCase
 		t.Run(testCase.name, func(t *testing.T) {
-			if testCase.flow == "xtls-rprx-vision" {
-				t.Skip("vision over XHTTP/XUDP needs body-level Vision wrapping around XUDP frames")
-			}
 			inboundOptions := inbound.VlessOption{
 				Certificate: tlsCertificate,
 				PrivateKey:  tlsPrivateKey,
